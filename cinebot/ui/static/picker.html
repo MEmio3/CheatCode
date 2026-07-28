@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0b0711" />
   <title>Cineplex Group Booker</title>
-  <link rel="stylesheet" href="/static/picker.css?v=2" />
+  <link rel="stylesheet" href="/static/picker.css?v=3" />
 </head>
 <body>
   <main class="shell">
@@ -110,6 +110,32 @@
       </section>
     </div>
 
+    <section class="sniper-card">
+      <div class="section-head">
+        <div><span class="step">05</span><h2>Sniper mode</h2></div>
+        <span id="snipe-badge" class="run-badge idle">Off</span>
+      </div>
+      <p class="snipe-help">Set the four attendee names + bKash numbers in step 03 (seats are auto-computed from the rule below), then start watching. When the target movie goes bookable on the chosen date/hall/time, the four sessions fire automatically. Saved only to a local gitignored file.</p>
+      <div class="picker-grid">
+        <label><span>Location</span><select id="snipe-location"><option value="1">Bashundhara Shopping Mall</option></select></label>
+        <label><span>Target movie</span><input id="snipe-movie" type="text" value="Spider-Man: Brand New Day" placeholder="Movie to watch for" /></label>
+        <label><span>Show date</span><input id="snipe-date" type="text" value="2026-08-01" placeholder="YYYY-MM-DD" /></label>
+        <label><span>Hall</span><input id="snipe-hall" type="number" min="1" value="6" /></label>
+        <label><span>Time from</span><input id="snipe-start" type="text" value="15:30" placeholder="HH:MM" /></label>
+        <label><span>Time to</span><input id="snipe-end" type="text" value="18:00" placeholder="HH:MM" /></label>
+        <label><span>Total seats</span><input id="snipe-total" type="number" min="1" max="40" value="36" /></label>
+        <label><span>Primary rows (drop last 2 each)</span><input id="snipe-rows" type="text" value="E,F" /></label>
+        <label><span>Fill row</span><input id="snipe-fill" type="text" value="G" /></label>
+        <label><span>Poll every (sec)</span><input id="snipe-poll" type="number" min="15" value="75" /></label>
+      </div>
+      <div id="snipe-status" class="inline-status ready">No sniper running. Save a target, then start watching.</div>
+      <div class="snipe-actions">
+        <button id="snipe-save" class="quiet-button" type="button">Save target + payments</button>
+        <button id="snipe-start" class="primary-button" type="button"><span>Start watching</span><span>&rarr;</span></button>
+        <button id="snipe-stop" class="stop-button" type="button" hidden>Stop sniper</button>
+      </div>
+    </section>
+
     <section class="security-note">
       <div class="lock">&#9679;</div>
       <div><strong>OTP on this page. PIN only inside bKash.</strong><p>The OTP prompt identifies the full bKash number, attendee, seats, amount and invoice. No number, name, OTP or PIN is saved.</p></div>
@@ -131,6 +157,6 @@
     </section>
   </div>
 
-  <script src="/static/picker.js?v=3"></script>
+  <script src="/static/picker.js?v=6"></script>
 </body>
 </html>
