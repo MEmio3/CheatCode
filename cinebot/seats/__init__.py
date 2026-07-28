@@ -1,0 +1,1 @@
+"""Seat selection package."""
