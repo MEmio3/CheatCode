@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# secrets / local state
+.env
+config.local.toml
+*.session
+*.session.json
+secrets/
+.cinebot/
+
+# recon captures with personal data
+recon_captures/
+*.har
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

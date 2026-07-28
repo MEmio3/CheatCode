@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#12051f" />
+  <title>Hall 6 Group Booker</title>
+  <link rel="stylesheet" href="/static/style.css?v=4" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="eyebrow"><span class="live-dot"></span> Local booking console</div>
+      <h1>Keep the whole group together.</h1>
+      <p>One focused run for the full E and F rows in Hall 6.</p>
+    </header>
+
+    <section class="target-card" aria-label="Booking target">
+      <div class="target-main">
+        <span class="target-kicker">Locked target</span>
+        <h2 id="target-movie">Spider-Man: Brand New Day</h2>
+        <div class="target-meta">
+          <span>01 AUG</span><i></i><span>HALL 6</span><i></i><span>4–6 PM</span>
+        </div>
+      </div>
+      <div class="seat-total">
+        <strong id="expected-seats">34</strong>
+        <span>seats</span>
+        <small>Rows E + F</small>
+      </div>
+    </section>
+
+    <div class="layout">
+      <section class="panel setup-panel">
+        <div class="panel-head">
+          <div>
+            <span class="step-number">01</span>
+            <h2>Payment details</h2>
+          </div>
+          <span class="privacy-pill">Memory only</span>
+        </div>
+
+        <form id="booking-form" novalidate>
+          <label class="field">
+            <span>bKash number</span>
+            <input
+              id="bkash-number"
+              name="bkash-number"
+              type="tel"
+              inputmode="numeric"
+              autocomplete="tel"
+              placeholder="01XXXXXXXXX"
+              maxlength="14"
+              required
+            />
+            <small>Used for all four payments. Never saved.</small>
+          </label>
+
+          <div class="names-head">
+            <div>
+              <span>Real attendee names</span>
+              <small>One name for each contiguous payment block.</small>
+            </div>
+            <b>4 required</b>
+          </div>
+
+          <div id="name-fields" class="name-fields">
+            <label class="name-field">
+              <span><b>01</b> E1–E10 <em>10 seats</em></span>
+              <input type="text" autocomplete="name" placeholder="Attendee name" required />
+            </label>
+            <label class="name-field">
+              <span><b>02</b> E11–E17 <em>7 seats</em></span>
+              <input type="text" autocomplete="name" placeholder="Attendee name" required />
+            </label>
+            <label class="name-field">
+              <span><b>03</b> F1–F10 <em>10 seats</em></span>
+              <input type="text" autocomplete="name" placeholder="Attendee name" required />
+            </label>
+            <label class="name-field">
+              <span><b>04</b> F11–F17 <em>7 seats</em></span>
+              <input type="text" autocomplete="name" placeholder="Attendee name" required />
+            </label>
+          </div>
+
+          <div id="form-error" class="inline-error" role="alert"></div>
+          <button id="start-button" class="primary-button" type="submit">
+            <span>Find show &amp; prepare all seats</span>
+            <span class="button-arrow">→</span>
+          </button>
+          <p class="fine-print">
+            The app checks the live Cineplex schedule first. No booking is treated
+            as successful unless every selected seat is verified.
+          </p>
+        </form>
+      </section>
+
+      <section class="panel progress-panel">
+        <div class="panel-head">
+          <div>
+            <span class="step-number">02</span>
+            <h2>Live run</h2>
+          </div>
+          <span id="run-badge" class="run-badge idle">Ready</span>
+        </div>
+
+        <div class="run-summary">
+          <div class="radar" aria-hidden="true"><span></span></div>
+          <div>
+            <strong id="run-phase">Waiting for your details</strong>
+            <p id="run-detail">The schedule will be checked when you start.</p>
+          </div>
+        </div>
+
+        <div id="schedule-alert" class="schedule-alert">
+          <strong>Schedule-aware</strong>
+          <span>Spider-Man is currently shown as Coming Soon. If August 1 is not published yet, the run stops safely before creating any booking.</span>
+        </div>
+
+        <div id="session-list" class="session-list" aria-live="polite">
+          <div class="empty-state">
+            <span>4</span>
+            <p>payment sessions will appear here</p>
+          </div>
+        </div>
+
+        <button id="stop-button" class="stop-button" type="button" hidden>Stop run</button>
+      </section>
+    </div>
+
+    <section class="security-note">
+      <div class="lock-mark" aria-hidden="true">⌁</div>
+      <div>
+        <strong>OTP here. PIN only in bKash.</strong>
+        <p>Each OTP prompt shows the attendee, masked number, seats, amount and invoice above the input. The app never asks for or stores your bKash PIN.</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="otp-modal" class="modal-backdrop" hidden>
+    <section class="otp-modal" role="dialog" aria-modal="true" aria-labelledby="otp-title">
+      <button id="otp-close" class="modal-close" type="button" aria-label="Close OTP window">×</button>
+      <span id="otp-position" class="otp-position">Payment 1 of 4</span>
+      <h2 id="otp-title">bKash OTP</h2>
+      <p class="otp-intro">Match the SMS with these details before entering the code.</p>
+
+      <div class="otp-identity">
+        <div>
+          <span>Attendee</span>
+          <strong id="otp-name">—</strong>
+        </div>
+        <div>
+          <span>bKash number</span>
+          <strong id="otp-phone">—</strong>
+        </div>
+      </div>
+
+      <div class="otp-order">
+        <div>
+          <span>Seats</span>
+          <strong id="otp-seats">—</strong>
+        </div>
+        <div>
+          <span>Amount</span>
+          <strong id="otp-amount">—</strong>
+        </div>
+        <div>
+          <span>Invoice</span>
+          <strong id="otp-invoice">Pending</strong>
+        </div>
+      </div>
+
+      <label class="otp-field">
+        <span>Verification code</span>
+        <input id="otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Enter OTP" />
+      </label>
+      <div id="otp-error" class="inline-error" role="alert"></div>
+      <button id="otp-submit" class="primary-button" type="button">
+        <span>Submit OTP</span><span class="button-arrow">→</span>
+      </button>
+      <p class="pin-reminder">Next: enter the PIN directly in the secure bKash browser window.</p>
+    </section>
+  </div>
+
+  <script src="/static/app.js?v=4"></script>
+</body>
+</html>
