@@ -53,6 +53,7 @@ class SnipeConfig:
     primary_rows: list[str] = field(default_factory=lambda: ["E", "F"])
     fill_row: str = "G"
     trim_last: int = 2
+    num_payments: int = 4
     attendees: list[SnipeAttendee] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -69,6 +70,7 @@ class SnipeConfig:
             "primary_rows": list(self.primary_rows),
             "fill_row": self.fill_row,
             "trim_last": self.trim_last,
+            "num_payments": self.num_payments,
             "attendees": [{"name": a.name, "bkash": a.bkash} for a in self.attendees],
         }
 
@@ -87,6 +89,7 @@ class SnipeConfig:
             primary_rows=[str(r) for r in (d.get("primary_rows") or ["E", "F"])],
             fill_row=str(d.get("fill_row") or "G"),
             trim_last=int(d.get("trim_last") or 2),
+            num_payments=int(d.get("num_payments") or 4),
             attendees=[
                 SnipeAttendee(name=str(a.get("name") or ""), bkash=str(a.get("bkash") or ""))
                 for a in (d.get("attendees") or [])
@@ -104,12 +107,16 @@ class SnipeConfig:
             raise GroupPlanError("Total seats must be between 1 and 40.")
         if len(self.primary_rows) < 1:
             raise GroupPlanError("Pick at least one primary row.")
-        chunks = (self.total_seats + SITE_TRANSACTION_CAP - 1) // SITE_TRANSACTION_CAP
-        if len(self.attendees) != chunks:
+        min_payments = (self.total_seats + SITE_TRANSACTION_CAP - 1) // SITE_TRANSACTION_CAP
+        if not min_payments <= self.num_payments <= 8:
             raise GroupPlanError(
-                f"{self.total_seats} seats need {chunks} payment session"
-                f"{'s' if chunks != 1 else ''} (<=10 each), "
-                f"but {len(self.attendees)} attendee(s) were given."
+                f"{self.total_seats} seats need between {min_payments} and 8 payments; "
+                f"you set {self.num_payments}."
+            )
+        if len(self.attendees) != self.num_payments:
+            raise GroupPlanError(
+                f"{self.num_payments} payment session(s) selected but "
+                f"{len(self.attendees)} attendee(s) provided."
             )
         for i, a in enumerate(self.attendees, 1):
             if not a.name.strip():
@@ -211,8 +218,19 @@ def compute_seat_plan(
     return labels
 
 
-def chunk_labels(labels: list[str], cap: int = SITE_TRANSACTION_CAP) -> list[list[str]]:
-    return [labels[i : i + cap] for i in range(0, len(labels), cap)]
+def chunk_labels_into(labels: list[str], parts: int) -> list[list[str]]:
+    """Split labels into exactly `parts` contiguous chunks, as evenly as
+    possible. Each chunk stays <= SITE_TRANSACTION_CAP as long as
+    parts >= ceil(n/cap) (enforced by SnipeConfig.validate)."""
+    parts = max(1, parts)
+    base, rem = divmod(len(labels), parts)
+    sizes = [base + (1 if i < rem else 0) for i in range(parts)]
+    out: list[list[str]] = []
+    i = 0
+    for size in sizes:
+        out.append(labels[i : i + size])
+        i += size
+    return out
 
 
 class SniperManager:
@@ -387,7 +405,7 @@ class SniperManager:
             cfg.total_seats,
             cfg.trim_last,
         )
-        chunks = chunk_labels(labels)
+        chunks = chunk_labels_into(labels, cfg.num_payments)
         if len(chunks) != len(cfg.attendees):
             raise GroupPlanError(
                 f"Seat plan split into {len(chunks)} payments but "

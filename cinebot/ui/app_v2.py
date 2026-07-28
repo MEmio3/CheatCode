@@ -42,7 +42,7 @@ class PaymentIn(BaseModel):
 
 class StartIn(BaseModel):
     target: TargetIn
-    payments: list[PaymentIn] = Field(..., min_length=4, max_length=4)
+    payments: list[PaymentIn] = Field(..., min_length=1, max_length=8)
 
 
 class OtpIn(BaseModel):
@@ -68,7 +68,8 @@ class SnipeConfigIn(BaseModel):
     primary_rows: list[str] = Field(default_factory=lambda: ["E", "F"])
     fill_row: str = Field("G", min_length=1, max_length=3)
     trim_last: int = Field(2, ge=0, le=8)
-    attendees: list[SnipeAttendeeIn] = Field(..., min_length=1, max_length=4)
+    num_payments: int = Field(4, ge=1, le=8)
+    attendees: list[SnipeAttendeeIn] = Field(..., min_length=1, max_length=8)
 
 
 def _to_snipe_config(body: SnipeConfigIn) -> SnipeConfig:
@@ -85,6 +86,7 @@ def _to_snipe_config(body: SnipeConfigIn) -> SnipeConfig:
         primary_rows=list(body.primary_rows),
         fill_row=body.fill_row,
         trim_last=body.trim_last,
+        num_payments=body.num_payments,
         attendees=[
             SnipeAttendee(name=a.name, bkash=a.bkash) for a in body.attendees
         ],
