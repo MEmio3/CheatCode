@@ -281,8 +281,75 @@ function setActivePayment(index) {
   });
 }
 
+function paymentCount() {
+  return Math.max(1, Math.min(8, Number($("payment-count")?.value) || 4));
+}
+
+function minPayments() {
+  return Math.ceil((Number($("snipe-total")?.value) || 36) / 10);
+}
+
+function clampPaymentCount() {
+  const el = $("payment-count");
+  if (!el) return;
+  const mn = Math.max(1, Math.min(8, minPayments()));
+  el.min = String(mn);
+  if (paymentCount() < mn) el.value = String(mn);
+}
+
+function renderSessionTabs(count) {
+  const root = $("session-tabs");
+  if (!root) return;
+  root.innerHTML = "";
+  for (let i = 0; i < count; i++) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `session-tab s${i + 1}` + (i === activePayment ? " active" : "");
+    b.dataset.session = String(i);
+    b.innerHTML = `Payment ${i + 1} <b>${(assignments[i] || []).length}/10</b>`;
+    b.addEventListener("click", () => setActivePayment(i));
+    root.appendChild(b);
+  }
+}
+
+function renderPaymentEntries(count) {
+  const root = $("payment-fields");
+  if (!root) return;
+  const prev = [...root.querySelectorAll(".payment-entry")].map((e) => ({
+    name: e.querySelector(".name-input")?.value || "",
+    phone: e.querySelector(".phone-input")?.value || "",
+  }));
+  root.innerHTML = "";
+  for (let i = 0; i < count; i++) {
+    const a = document.createElement("article");
+    a.className = `payment-entry s${i + 1}`;
+    a.dataset.payment = String(i);
+    const p = prev[i] || {};
+    a.innerHTML =
+      `<div class="payment-title"><b>${String(i + 1).padStart(2, "0")}</b><div><strong>Payment ${i + 1}</strong><span class="payment-seats">No seats assigned</span></div></div>` +
+      `<label><span>Attendee name</span><input class="name-input" autocomplete="name" placeholder="Real attendee name" value="${escapeHtml(p.name)}"></label>` +
+      `<label><span>bKash number</span><input class="phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="01XXXXXXXXX" value="${escapeHtml(p.phone)}"></label>`;
+    root.appendChild(a);
+  }
+  document.querySelectorAll(".payment-entry input").forEach((input) => input.addEventListener("input", updateStartButton));
+}
+
+function applyPaymentCount() {
+  const count = paymentCount();
+  const next = [];
+  for (let i = 0; i < count; i++) next.push(assignments[i] || []);
+  assignments = next;
+  if (activePayment > count - 1) activePayment = count - 1;
+  if (activePayment < 0) activePayment = 0;
+  renderSessionTabs(count);
+  renderPaymentEntries(count);
+  const label = $("seat-total-label");
+  if (label) label.textContent = `/ ${count * 10} selected`;
+  updateAssignments();
+}
+
 function resetAssignments() {
-  assignments = [[], [], [], []];
+  assignments = Array.from({ length: paymentCount() }, () => []);
   activePayment = 0;
   setActivePayment(0);
   $("seat-error").textContent = "";
@@ -555,6 +622,9 @@ function buildSnipeConfig() {
   const sl = $("snipe-location");
   const slOpt = sl && sl.options[sl.selectedIndex];
   if (!slOpt || !slOpt.value) throw new Error("Pick a sniper location.");
+  if (paymentCount() < minPayments()) {
+    throw new Error(`Need at least ${minPayments()} payment(s) for ${$("snipe-total").value} seats (10 per payment).`);
+  }
   const attendees = readAttendees();
   const rows = $("snipe-rows").value.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
   if (rows.length < 1) throw new Error("Primary rows are required (e.g. E,F).");
@@ -571,6 +641,7 @@ function buildSnipeConfig() {
     primary_rows: rows,
     fill_row: ($("snipe-fill").value.trim().toUpperCase() || "G"),
     trim_last: 2,
+    num_payments: paymentCount(),
     attendees,
   };
 }
@@ -587,9 +658,18 @@ async function loadSnipeConfig() {
     $("snipe-start").value = cfg.time_start;
     $("snipe-end").value = cfg.time_end;
     $("snipe-total").value = cfg.total_seats;
+    $("payment-count").value = String(cfg.num_payments || 4);
+    clampPaymentCount();
     $("snipe-rows").value = (cfg.primary_rows || ["E", "F"]).join(",");
     $("snipe-fill").value = cfg.fill_row || "G";
     $("snipe-poll").value = cfg.poll_seconds;
+    applyPaymentCount();
+    (cfg.attendees || []).forEach((att, i) => {
+      const e = document.querySelectorAll(".payment-entry")[i];
+      if (!e) return;
+      if (att.name) e.querySelector(".name-input").value = att.name;
+      if (att.bkash) e.querySelector(".phone-input").value = att.bkash;
+    });
     setSnipeStatus(
       `Saved target: ${cfg.target_movie} on ${cfg.show_date} — ${cfg.location_name} Hall ${cfg.hall_id}, ${cfg.time_start}-${cfg.time_end}. ${cfg.total_seats} seats (rows ${(cfg.primary_rows||[]).join(",")} minus last ${cfg.trim_last ?? 2}, fill ${cfg.fill_row}). ${cfg.attendees.length} attendees.`,
       "ready",
@@ -688,16 +768,15 @@ $("otp-code").addEventListener("keydown", (event) => {
     submitOtp();
   }
 });
-document.querySelectorAll(".session-tab").forEach((tab) => {
-  tab.addEventListener("click", () => setActivePayment(Number(tab.dataset.session)));
-});
-document.querySelectorAll(".payment-entry input").forEach((input) => input.addEventListener("input", updateStartButton));
+$("snipe-total").addEventListener("input", () => { clampPaymentCount(); applyPaymentCount(); });
+$("payment-count").addEventListener("input", () => { clampPaymentCount(); applyPaymentCount(); });
 $("snipe-save").addEventListener("click", snipeSave);
 $("snipe-start").addEventListener("click", snipeStart);
 $("snipe-stop").addEventListener("click", snipeStop);
 
 Promise.all([api("/api/group/config"), refreshState(), api("/api/snipe/state")]).then(([loadedConfig, , snipe]) => {
   config = loadedConfig;
+  applyPaymentCount();
   if (runState?.busy) beginPolling();
   loadSnipeConfig();
   if (snipe?.busy) {

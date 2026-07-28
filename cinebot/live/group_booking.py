@@ -130,15 +130,17 @@ def target_from_payload(payload: dict[str, Any]) -> BookingTarget:
 
 
 def payments_from_payload(payloads: list[dict[str, Any]]) -> list[PaymentRequest]:
-    if len(payloads) != 4:
-        raise GroupPlanError("Exactly four payment sessions are required.")
-    names = validate_names([str(item.get("name") or "") for item in payloads], 4)
+    if not 1 <= len(payloads) <= 8:
+        raise GroupPlanError("Between 1 and 8 payment sessions are required.")
+    names = validate_names(
+        [str(item.get("name") or "") for item in payloads], len(payloads)
+    )
     phones = [
         validate_bkash_number(str(item.get("bkash_number") or ""))
         for item in payloads
     ]
-    if len(set(phones)) != 4:
-        raise GroupPlanError("Use four different bKash numbers, one per session.")
+    if len(set(phones)) != len(phones):
+        raise GroupPlanError("Use a different bKash number for each session.")
 
     requests: list[PaymentRequest] = []
     all_labels: list[str] = []
@@ -289,8 +291,8 @@ class GroupBookingManager:
                         amount=target.unit_price * len(chunk.seats),
                     )
                 self.status = "running"
-                self.phase = "Preparing four sessions"
-                self.detail = "Opening four isolated sessions and verifying exact seats."
+                self.phase = f"Preparing {len(payments)} session{'s' if len(payments) != 1 else ''}"
+                self.detail = f"Opening {len(payments)} isolated session{'s' if len(payments) != 1 else ''} and verifying exact seats."
                 results = await asyncio.gather(
                     *(
                         self._run_payment_session(self._browser, session, target)
@@ -526,15 +528,7 @@ class GroupBookingManager:
             for _ in session.chunk.seats:
                 await plus.click()
                 await page.wait_for_timeout(200)
-
-            # The Purchase button doubles as the control that reveals the seat
-            # map. Click it once (reCAPTCHA must have resolved to enable it) so
-            # the seat cells become clickable, matching the proven run.py flow.
-            purchase = page.locator("button.btn-desktop-purchase").first
-            await self._wait_enabled(purchase, timeout_ms=30_000)
-            await self._dismiss_swal2(page)
-            await purchase.click()
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(800)  # seat map renders after qty is set
 
             await page.get_by_text(session.chunk.labels[0], exact=True).first.wait_for(
                 state="visible", timeout=15_000
@@ -671,14 +665,14 @@ class GroupBookingManager:
             )
             if self._ready_count == self._ready_expected:
                 self._purchases_released = True
-                self.phase = "All four ready"
-                self.detail = "All seats verified. Releasing four purchases together."
+                self.phase = "All ready"
+                self.detail = f"All {self._ready_expected} seat set(s) verified. Releasing purchases together."
                 self._ready_event.set()
         try:
             await asyncio.wait_for(self._ready_event.wait(), timeout=45)
         except TimeoutError as exc:
-            await self._abort_group_gate("Not all four sessions became ready in time.")
-            raise GroupPlanError("Not all four sessions became ready in time.") from exc
+            await self._abort_group_gate("Not all sessions became ready in time.")
+            raise GroupPlanError("Not all sessions became ready in time.") from exc
         if self._gate_error:
             raise GroupPlanError(
                 "Purchases stopped before booking because another session failed: "

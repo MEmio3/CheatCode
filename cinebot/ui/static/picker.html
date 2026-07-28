@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0b0711" />
   <title>Cineplex Group Booker</title>
-  <link rel="stylesheet" href="/static/picker.css?v=3" />
+  <link rel="stylesheet" href="/static/picker.css?v=5" />
 </head>
 <body>
   <main class="shell">
@@ -38,19 +38,14 @@
     <section id="seat-stage" class="seat-card locked">
       <div class="section-head">
         <div><span class="step">02</span><h2>Choose exact seats</h2></div>
-        <div class="seat-total"><strong id="seat-count">0</strong><span>/ 40 selected</span></div>
+        <div class="seat-total"><strong id="seat-count">0</strong><span id="seat-total-label">/ 40 selected</span></div>
       </div>
       <div class="assign-bar">
         <div>
           <strong>Assign clicks to</strong>
-          <span>Each payment can hold up to 10 seats.</span>
+          <span>Each payment holds up to 10 seats. The number of payments follows the seat total (set in Sniper mode).</span>
         </div>
-        <div class="session-tabs" role="tablist" aria-label="Active payment session">
-          <button class="session-tab active s1" data-session="0" type="button">Payment 1 <b>0/10</b></button>
-          <button class="session-tab s2" data-session="1" type="button">Payment 2 <b>0/10</b></button>
-          <button class="session-tab s3" data-session="2" type="button">Payment 3 <b>0/10</b></button>
-          <button class="session-tab s4" data-session="3" type="button">Payment 4 <b>0/10</b></button>
-        </div>
+        <div id="session-tabs" class="session-tabs" role="tablist" aria-label="Active payment session"></div>
       </div>
       <div class="screen-line"><span>SCREEN</span></div>
       <div id="seat-map" class="seat-map">
@@ -67,36 +62,16 @@
     <div class="work-grid">
       <section class="payment-panel">
         <div class="section-head">
-          <div><span class="step">03</span><h2>Four payment details</h2></div>
+          <div><span class="step">03</span><h2>Payment details</h2></div>
+          <label class="payments-count">Payments <input id="payment-count" type="number" min="1" max="8" value="4" title="How many bKash payments / attendee wallets to split across" /></label>
           <span class="memory-pill">Memory only</span>
         </div>
-        <div id="payment-fields" class="payment-fields">
-          <article class="payment-entry s1" data-payment="0">
-            <div class="payment-title"><b>01</b><div><strong>Payment 1</strong><span class="payment-seats">No seats assigned</span></div></div>
-            <label><span>Attendee name</span><input class="name-input" autocomplete="name" placeholder="Real attendee name" /></label>
-            <label><span>bKash number</span><input class="phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="01XXXXXXXXX" /></label>
-          </article>
-          <article class="payment-entry s2" data-payment="1">
-            <div class="payment-title"><b>02</b><div><strong>Payment 2</strong><span class="payment-seats">No seats assigned</span></div></div>
-            <label><span>Attendee name</span><input class="name-input" autocomplete="name" placeholder="Real attendee name" /></label>
-            <label><span>bKash number</span><input class="phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="01XXXXXXXXX" /></label>
-          </article>
-          <article class="payment-entry s3" data-payment="2">
-            <div class="payment-title"><b>03</b><div><strong>Payment 3</strong><span class="payment-seats">No seats assigned</span></div></div>
-            <label><span>Attendee name</span><input class="name-input" autocomplete="name" placeholder="Real attendee name" /></label>
-            <label><span>bKash number</span><input class="phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="01XXXXXXXXX" /></label>
-          </article>
-          <article class="payment-entry s4" data-payment="3">
-            <div class="payment-title"><b>04</b><div><strong>Payment 4</strong><span class="payment-seats">No seats assigned</span></div></div>
-            <label><span>Attendee name</span><input class="name-input" autocomplete="name" placeholder="Real attendee name" /></label>
-            <label><span>bKash number</span><input class="phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="01XXXXXXXXX" /></label>
-          </article>
-        </div>
+        <div id="payment-fields" class="payment-fields" aria-live="polite"></div>
         <div id="form-error" class="inline-error" role="alert"></div>
         <button id="start-button" class="primary-button" type="button" disabled>
-          <span>Verify seats &amp; launch four payments</span><span>&rarr;</span>
+          <span>Verify seats &amp; launch payments</span><span>&rarr;</span>
         </button>
-        <p class="fine-print">All four windows must verify their exact seats before any Purchase click is released.</p>
+        <p class="fine-print">Every payment window must verify its exact seats before any Purchase click is released.</p>
       </section>
 
       <section class="progress-panel">
@@ -105,7 +80,7 @@
           <span id="run-badge" class="run-badge idle">Ready</span>
         </div>
         <div class="run-summary"><div class="radar"><span></span></div><div><strong id="run-phase">Waiting for selection</strong><p id="run-detail">Nothing is booked while you are choosing.</p></div></div>
-        <div id="session-list" class="run-sessions"><div class="run-empty"><b>4</b><span>payment sessions will appear here</span></div></div>
+        <div id="session-list" class="run-sessions"><div class="run-empty"><span>Payment sessions will appear here once you launch.</span></div></div>
         <button id="stop-button" class="stop-button" type="button" hidden>Stop run</button>
       </section>
     </div>
@@ -157,6 +132,6 @@
     </section>
   </div>
 
-  <script src="/static/picker.js?v=6"></script>
+  <script src="/static/picker.js?v=10"></script>
 </body>
 </html>
