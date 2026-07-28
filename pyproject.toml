@@ -11,6 +11,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "sse-starlette>=2.1",
     "python-telegram-bot>=21",
+    "python-dotenv>=1.0",
     "keyring>=25",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",

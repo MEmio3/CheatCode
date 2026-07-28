@@ -1,4 +1,4 @@
-"""Local UI and API for the live Cineplex picker and four payment sessions."""
+"""Local UI and API for the live Cineplex picker and payment sessions."""
 from __future__ import annotations
 
 import logging
@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from ..config_store import CredentialStore, telegram_env_credentials
 from ..group import GroupPlanError
 from ..live.catalog import CatalogError, CatalogManager
 from ..live.group_booking import GroupBookingManager
@@ -43,6 +44,7 @@ class PaymentIn(BaseModel):
 class StartIn(BaseModel):
     target: TargetIn
     payments: list[PaymentIn] = Field(..., min_length=1, max_length=8)
+    allow_duplicate_identity: bool = False
 
 
 class OtpIn(BaseModel):
@@ -56,20 +58,25 @@ class SnipeAttendeeIn(BaseModel):
 
 
 class SnipeConfigIn(BaseModel):
-    target_movie: str = Field("Spider-Man: Brand New Day", min_length=1, max_length=200)
-    location_id: int = Field(1, gt=0)
-    location_name: str = Field("Bashundhara Shopping Mall", min_length=1, max_length=160)
-    hall_id: int = Field(6, gt=0)
-    show_date: str = Field("2026-08-01", min_length=10, max_length=10)
-    time_start: str = Field("15:30", min_length=4, max_length=5)
-    time_end: str = Field("18:00", min_length=4, max_length=5)
+    target_movie: str = Field(..., min_length=1, max_length=200)
+    location_id: int = Field(..., gt=0)
+    location_name: str = Field(..., min_length=1, max_length=160)
+    hall_ids: list[int] = Field(default_factory=list, max_length=12)
+    show_date: str = Field(..., min_length=10, max_length=10)
+    time_start: str = Field("", max_length=5)
+    time_end: str = Field("", max_length=5)
     poll_seconds: int = Field(75, ge=15, le=600)
-    total_seats: int = Field(36, ge=1, le=40)
-    primary_rows: list[str] = Field(default_factory=lambda: ["E", "F"])
-    fill_row: str = Field("G", min_length=1, max_length=3)
+    total_seats: int = Field(1, ge=1, le=40)
+    primary_rows: list[str] = Field(default_factory=list, max_length=26)
+    fill_row: str = Field("", max_length=3)
     trim_last: int = Field(2, ge=0, le=8)
-    num_payments: int = Field(4, ge=1, le=8)
+    num_payments: int = Field(1, ge=1, le=8)
     attendees: list[SnipeAttendeeIn] = Field(..., min_length=1, max_length=8)
+
+
+class TelegramConfigIn(BaseModel):
+    bot_token: str = Field(..., min_length=20, max_length=200)
+    chat_id: str = Field(..., min_length=1, max_length=40)
 
 
 def _to_snipe_config(body: SnipeConfigIn) -> SnipeConfig:
@@ -77,7 +84,7 @@ def _to_snipe_config(body: SnipeConfigIn) -> SnipeConfig:
         target_movie=body.target_movie,
         location_id=body.location_id,
         location_name=body.location_name,
-        hall_id=body.hall_id,
+        hall_ids=list(body.hall_ids),
         show_date=body.show_date,
         time_start=body.time_start,
         time_end=body.time_end,
@@ -118,7 +125,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Cineplex Group Booker",
-    description="Local live show picker with four synchronized bKash sessions",
+    description="Local live show picker with synchronized bKash sessions",
     lifespan=lifespan,
 )
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
@@ -141,15 +148,29 @@ def index():
     return FileResponse(os.path.join(_STATIC_DIR, "picker.html"))
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Serve the app icon explicitly so browsers do not log a 404."""
+    return FileResponse(
+        os.path.join(_STATIC_DIR, "favicon.svg"),
+        media_type="image/svg+xml",
+    )
+
+
 @app.get("/legacy")
 def legacy():
     return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
 
 
+@app.get("/payment-status")
+def payment_status():
+    return FileResponse(os.path.join(_STATIC_DIR, "payment_status.html"))
+
+
 @app.get("/api/group/config")
 def group_config():
     return {
-        "payments": 4,
+        "payments": 1,
         "max_seats_per_payment": 10,
         "max_total_seats": 40,
         "pin_policy": "PIN is entered only in the secure bKash window.",
@@ -213,6 +234,7 @@ async def group_start(body: StartIn, request: Request):
         run_id = await manager.start(
             body.target.model_dump(),
             [payment.model_dump() for payment in body.payments],
+            allow_duplicate_identity=body.allow_duplicate_identity,
         )
     except GroupPlanError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -241,6 +263,24 @@ def _sniper(request: Request) -> SniperManager:
 def snipe_config_get():
     cfg = load_config()
     return cfg.to_dict() if cfg else {"saved": False}
+
+
+@app.get("/api/telegram/config")
+def telegram_config_get():
+    store = CredentialStore.auto()
+    env_token, env_chat_id = telegram_env_credentials()
+    return {
+        "bot_token_set": bool(env_token or store.get("telegram_bot_token")),
+        "chat_id": env_chat_id or store.get("telegram_chat_id") or "",
+    }
+
+
+@app.post("/api/telegram/config")
+def telegram_config_save(body: TelegramConfigIn):
+    store = CredentialStore.auto()
+    store.set("telegram_bot_token", body.bot_token.strip())
+    store.set("telegram_chat_id", body.chat_id.strip())
+    return {"saved": True}
 
 
 @app.post("/api/snipe/config")

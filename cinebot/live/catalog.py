@@ -158,7 +158,7 @@ class CatalogManager:
                         await page.goto(
                             ORIGIN, wait_until="domcontentloaded", timeout=30_000
                         )
-                        button = page.locator("button.guest-login").first
+                        button = page.get_by_role("button", name="Guest Login", exact=True)
                         await button.wait_for(state="visible", timeout=15_000)
                         async with page.expect_response(
                             lambda response: "/api/v1/guest-login" in response.url,
@@ -195,15 +195,16 @@ class CatalogManager:
 
     async def _call(self, method: str, *args: Any) -> Any:
         last_error: Exception | None = None
-        for attempt in range(2):
+        for attempt in range(3):
             client = await self._ensure_client()
             try:
                 func: Callable[..., Any] = getattr(client, method)
                 return await asyncio.to_thread(func, *args)
             except Exception as exc:
                 last_error = exc
-                if attempt == 0:
+                if attempt < 2:
                     self._client = None
+                    await asyncio.sleep(0.75 * (2**attempt))
                     continue
         raise CatalogError(str(last_error) or "The Cineplex catalog request failed.")
 

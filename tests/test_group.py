@@ -1,9 +1,7 @@
 """Focused tests for the August 1 Hall 6 group planner."""
 from __future__ import annotations
 
-import json
 import unittest
-from pathlib import Path
 
 from cinebot.group import (
     GroupPlanError,
@@ -14,16 +12,19 @@ from cinebot.group import (
     validate_bkash_number,
     validate_names,
 )
+from cinebot.live.group_booking import payments_from_payload
 from cinebot.seats.scorer import Seat, SeatMap, seatmap_from_view
-
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 class GroupPlannerTests(unittest.TestCase):
     def test_captured_hall6_rows_plan_as_10_7_10_7(self):
-        view = json.loads((ROOT / "live_seats.json").read_text(encoding="utf-8"))
-        chunks = plan_full_rows(seatmap_from_view(view))
+        seats = [
+            Seat(row=index, col=column, row_label=row, col_label=str(column + 1),
+                 available=True, seat_id=f"{row}{column + 1}")
+            for index, row in enumerate(("E", "F"))
+            for column in range(17)
+        ]
+        chunks = plan_full_rows(SeatMap(n_rows=2, n_cols=17, seats=seats))
 
         self.assertEqual([len(chunk.seats) for chunk in chunks], [10, 7, 10, 7])
         self.assertEqual(sum(len(chunk.seats) for chunk in chunks), 34)
@@ -99,6 +100,18 @@ class GroupPlannerTests(unittest.TestCase):
         self.assertEqual(validate_bkash_number("+8801712345678"), "01712345678")
         with self.assertRaises(GroupPlanError):
             validate_bkash_number("012345")
+
+    def test_duplicate_identity_requires_explicit_override(self):
+        payload = [
+            {"name": "Meher", "bkash_number": "01712345678", "seats": ["E1"]},
+            {"name": "Meher", "bkash_number": "01712345678", "seats": ["E2"]},
+        ]
+        with self.assertRaises(GroupPlanError):
+            payments_from_payload(payload)
+        self.assertEqual(
+            len(payments_from_payload(payload, allow_duplicate_identity=True)),
+            2,
+        )
 
 
 if __name__ == "__main__":

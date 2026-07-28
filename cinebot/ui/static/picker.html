@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="/favicon.ico" />
   <meta name="theme-color" content="#0b0711" />
   <title>Cineplex Group Booker</title>
   <link rel="stylesheet" href="/static/picker.css?v=5" />
@@ -12,7 +13,7 @@
     <header class="hero">
       <div class="eyebrow"><span></span> Live Cineplex control</div>
       <h1>Pick the show. Pick every seat. Move together.</h1>
-      <p>Four synchronized bKash sessions, controlled from one local page.</p>
+      <p>Multiple synchronized bKash sessions, controlled from one local page.</p>
     </header>
 
     <section class="picker-card">
@@ -63,10 +64,11 @@
       <section class="payment-panel">
         <div class="section-head">
           <div><span class="step">03</span><h2>Payment details</h2></div>
-          <label class="payments-count">Payments <input id="payment-count" type="number" min="1" max="8" value="4" title="How many bKash payments / attendee wallets to split across" /></label>
+          <label class="payments-count">Payments <input id="payment-count" type="number" min="1" max="8" value="1" title="How many bKash payments / attendee wallets to split across" /></label>
           <span class="memory-pill">Memory only</span>
         </div>
         <div id="payment-fields" class="payment-fields" aria-live="polite"></div>
+        <label class="override-warning"><input id="allow-duplicate-identity" type="checkbox" /> <span>Allow the same name or bKash number across payments (unsafe; launches 5 seconds apart)</span></label>
         <div id="form-error" class="inline-error" role="alert"></div>
         <button id="start-button" class="primary-button" type="button" disabled>
           <span>Verify seats &amp; launch payments</span><span>&rarr;</span>
@@ -90,22 +92,25 @@
         <div><span class="step">05</span><h2>Sniper mode</h2></div>
         <span id="snipe-badge" class="run-badge idle">Off</span>
       </div>
-      <p class="snipe-help">Set the four attendee names + bKash numbers in step 03 (seats are auto-computed from the rule below), then start watching. When the target movie goes bookable on the chosen date/hall/time, the four sessions fire automatically. Saved only to a local gitignored file.</p>
+      <p class="snipe-help">Set attendee names + bKash numbers in step 03 (seats are auto-computed from the rule below), then start watching. When the target movie goes bookable on the chosen date/hall/time, the configured sessions fire automatically. Saved only to a local gitignored file.</p>
       <div class="picker-grid">
-        <label><span>Location</span><select id="snipe-location"><option value="1">Bashundhara Shopping Mall</option></select></label>
-        <label><span>Target movie</span><input id="snipe-movie" type="text" value="Spider-Man: Brand New Day" placeholder="Movie to watch for" /></label>
-        <label><span>Show date</span><input id="snipe-date" type="text" value="2026-08-01" placeholder="YYYY-MM-DD" /></label>
-        <label><span>Hall</span><input id="snipe-hall" type="number" min="1" value="6" /></label>
-        <label><span>Time from</span><input id="snipe-start" type="text" value="15:30" placeholder="HH:MM" /></label>
-        <label><span>Time to</span><input id="snipe-end" type="text" value="18:00" placeholder="HH:MM" /></label>
-        <label><span>Total seats</span><input id="snipe-total" type="number" min="1" max="40" value="36" /></label>
-        <label><span>Primary rows (drop last 2 each)</span><input id="snipe-rows" type="text" value="E,F" /></label>
-        <label><span>Fill row</span><input id="snipe-fill" type="text" value="G" /></label>
+        <label><span>Location</span><select id="snipe-location"><option value="">Load locations first</option></select></label>
+        <label><span>Target movie</span><input id="snipe-movie" type="text" placeholder="e.g. Spider-Man: Brand New Day" required /></label>
+        <label><span>Show date</span><input id="snipe-date" type="date" required /></label>
+        <label><span>Preferred halls (optional)</span><input id="snipe-halls" type="text" placeholder="6, 7 (empty = any)" /></label>
+        <label><span>Time from (optional)</span><input id="snipe-start" type="time" /></label>
+        <label><span>Time to (optional)</span><input id="snipe-end" type="time" /></label>
+        <label><span>Total seats</span><input id="snipe-total" type="number" min="1" max="40" value="1" /></label>
+        <label><span>Primary rows (optional)</span><input id="snipe-rows" type="text" placeholder="E,F (empty = automatic)" /></label>
+        <label><span>Fill row (optional)</span><input id="snipe-fill" type="text" placeholder="G" /></label>
         <label><span>Poll every (sec)</span><input id="snipe-poll" type="number" min="15" value="75" /></label>
+        <label><span>Telegram bot token</span><input id="telegram-token" type="password" autocomplete="off" placeholder="Stored in Windows Credential Manager" /></label>
+        <label><span>Telegram chat ID</span><input id="telegram-chat" type="text" autocomplete="off" placeholder="Required for 30-minute updates" /></label>
       </div>
       <div id="snipe-status" class="inline-status ready">No sniper running. Save a target, then start watching.</div>
       <div class="snipe-actions">
         <button id="snipe-save" class="quiet-button" type="button">Save target + payments</button>
+        <button id="telegram-save" class="quiet-button" type="button">Save Telegram</button>
         <button id="snipe-start" class="primary-button" type="button"><span>Start watching</span><span>&rarr;</span></button>
         <button id="snipe-stop" class="stop-button" type="button" hidden>Stop sniper</button>
       </div>
@@ -120,7 +125,7 @@
   <div id="otp-modal" class="modal-backdrop" hidden>
     <section class="otp-modal" role="dialog" aria-modal="true" aria-labelledby="otp-title">
       <button id="otp-close" class="modal-close" type="button" aria-label="Close OTP dialog">&times;</button>
-      <span id="otp-position" class="otp-position">Payment 1 of 4</span>
+      <span id="otp-position" class="otp-position">Payment 1</span>
       <h2 id="otp-title">bKash OTP</h2>
       <p>Use the SMS sent to the exact number shown below.</p>
       <div class="otp-identity"><div><span>Attendee</span><strong id="otp-name">-</strong></div><div><span>bKash number</span><strong id="otp-phone">-</strong></div></div>

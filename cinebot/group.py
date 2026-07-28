@@ -208,7 +208,7 @@ def plan_full_rows(
     return chunks
 
 
-def validate_names(names: Sequence[str], required: int) -> list[str]:
+def validate_names(names: Sequence[str], required: int, *, allow_duplicates: bool = False) -> list[str]:
     cleaned = [re.sub(r"\s+", " ", name).strip() for name in names]
     if any(not name for name in cleaned):
         raise GroupPlanError("Every payment session needs a real attendee name.")
@@ -216,7 +216,7 @@ def validate_names(names: Sequence[str], required: int) -> list[str]:
         raise GroupPlanError(
             f"This seat plan needs exactly {required} attendee names, got {len(cleaned)}."
         )
-    if len({name.casefold() for name in cleaned}) != len(cleaned):
+    if not allow_duplicates and len({name.casefold() for name in cleaned}) != len(cleaned):
         raise GroupPlanError("Use a different real attendee name for each payment session.")
     return cleaned
 
