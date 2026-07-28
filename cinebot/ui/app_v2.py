@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from ..group import GroupPlanError
 from ..live.catalog import CatalogError, CatalogManager
 from ..live.group_booking import GroupBookingManager
+from ..sniper import SnipeAttendee, SnipeConfig, SniperManager, is_active, load_config, save_config
 
 log = logging.getLogger("cinebot.ui")
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -49,10 +50,59 @@ class OtpIn(BaseModel):
     code: str = Field(..., min_length=4, max_length=8)
 
 
+class SnipeAttendeeIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    bkash: str = Field(..., min_length=11, max_length=16)
+
+
+class SnipeConfigIn(BaseModel):
+    target_movie: str = Field("Spider-Man: Brand New Day", min_length=1, max_length=200)
+    location_id: int = Field(1, gt=0)
+    location_name: str = Field("Bashundhara Shopping Mall", min_length=1, max_length=160)
+    hall_id: int = Field(6, gt=0)
+    show_date: str = Field("2026-08-01", min_length=10, max_length=10)
+    time_start: str = Field("15:30", min_length=4, max_length=5)
+    time_end: str = Field("18:00", min_length=4, max_length=5)
+    poll_seconds: int = Field(75, ge=15, le=600)
+    total_seats: int = Field(36, ge=1, le=40)
+    primary_rows: list[str] = Field(default_factory=lambda: ["E", "F"])
+    fill_row: str = Field("G", min_length=1, max_length=3)
+    trim_last: int = Field(2, ge=0, le=8)
+    attendees: list[SnipeAttendeeIn] = Field(..., min_length=1, max_length=4)
+
+
+def _to_snipe_config(body: SnipeConfigIn) -> SnipeConfig:
+    return SnipeConfig(
+        target_movie=body.target_movie,
+        location_id=body.location_id,
+        location_name=body.location_name,
+        hall_id=body.hall_id,
+        show_date=body.show_date,
+        time_start=body.time_start,
+        time_end=body.time_end,
+        poll_seconds=body.poll_seconds,
+        total_seats=body.total_seats,
+        primary_rows=list(body.primary_rows),
+        fill_row=body.fill_row,
+        trim_last=body.trim_last,
+        attendees=[
+            SnipeAttendee(name=a.name, bkash=a.bkash) for a in body.attendees
+        ],
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.catalog = CatalogManager()
     app.state.group = GroupBookingManager()
+    app.state.sniper = SniperManager(app.state.catalog, app.state.group)
+    saved = load_config()
+    if saved and is_active():
+        log.info("resuming sniper watch for '%s'", saved.target_movie)
+        try:
+            await app.state.sniper.start(saved)
+        except Exception as exc:
+            log.warning("sniper resume failed: %s", exc)
     log.info("Live Cineplex group picker ready")
     try:
         yield
@@ -60,6 +110,8 @@ async def lifespan(app: FastAPI):
         manager: GroupBookingManager = app.state.group
         if manager.busy:
             await manager.stop()
+        if app.state.sniper.busy:
+            await app.state.sniper.shutdown()
 
 
 app = FastAPI(
@@ -177,6 +229,45 @@ def group_otp(body: OtpIn, request: Request):
 @app.post("/api/group/stop")
 async def group_stop(request: Request):
     return {"stopped": await _group(request).stop()}
+
+
+def _sniper(request: Request) -> SniperManager:
+    return request.app.state.sniper
+
+
+@app.get("/api/snipe/config")
+def snipe_config_get():
+    cfg = load_config()
+    return cfg.to_dict() if cfg else {"saved": False}
+
+
+@app.post("/api/snipe/config")
+def snipe_config_save(body: SnipeConfigIn):
+    cfg = _to_snipe_config(body)
+    cfg.validate()
+    save_config(cfg)
+    return {"saved": True}
+
+
+@app.post("/api/snipe/start")
+async def snipe_start(body: SnipeConfigIn, request: Request):
+    sniper = _sniper(request)
+    cfg = _to_snipe_config(body)
+    try:
+        await sniper.start(cfg)
+    except GroupPlanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse({"started": True}, status_code=202)
+
+
+@app.post("/api/snipe/stop")
+async def snipe_stop(request: Request):
+    return {"stopped": await _sniper(request).stop()}
+
+
+@app.get("/api/snipe/state")
+def snipe_state(request: Request):
+    return _sniper(request).snapshot()
 
 
 def main() -> None:

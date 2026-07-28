@@ -16,6 +16,8 @@ config.local.toml
 *.session.json
 secrets/
 .cinebot/
+snipe_config.json
+snipe_active.json
 
 # recon captures with personal data
 recon_captures/

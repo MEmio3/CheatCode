@@ -108,6 +108,17 @@ async function loadLocations() {
   try {
     const payload = await api("/api/catalog/locations");
     setSelect(selects.location, "Choose a location", payload.locations);
+    const sl = $("snipe-location");
+    if (sl) {
+      sl.innerHTML = "";
+      payload.locations.forEach((item) => {
+        const o = document.createElement("option");
+        o.value = String(item.id);
+        o.textContent = item.title;
+        sl.appendChild(o);
+      });
+      if ([...sl.options].some((o) => o.value === "1")) sl.value = "1";
+    }
     setCatalogStatus(
       `${payload.locations.length} Cineplex locations loaded. Pick from top to bottom.`,
       "ready",
@@ -508,6 +519,159 @@ async function stopRun() {
   }
 }
 
+let snipeState = null;
+let snipePoll = null;
+
+const SNIPE_BADGES = {
+  idle: "Off", watching: "Watching", firing: "Firing",
+  handed_off: "Live", error: "Error", stopped: "Stopped",
+};
+
+function snipeStatusKind(status) {
+  if (status === "error") return "error";
+  if (status === "firing" || status === "handed_off") return "ready";
+  return "loading";
+}
+
+function setSnipeStatus(message, kind = "ready") {
+  const status = $("snipe-status");
+  status.className = `inline-status ${kind}`;
+  status.textContent = message;
+}
+
+function readAttendees() {
+  const entries = [...document.querySelectorAll(".payment-entry")];
+  const attendees = entries.map((entry) => ({
+    name: entry.querySelector(".name-input").value.replace(/\s+/g, " ").trim(),
+    bkash: normalizePhone(entry.querySelector(".phone-input").value),
+  }));
+  if (attendees.some((item) => !item.name)) throw new Error("Enter all four attendee names in step 03.");
+  if (attendees.some((item) => !/^01[3-9]\d{8}$/.test(item.bkash))) throw new Error("Enter four valid Bangladesh bKash numbers in step 03.");
+  if (new Set(attendees.map((item) => item.bkash)).size !== attendees.length) throw new Error("Use a different bKash number per attendee.");
+  return attendees;
+}
+
+function buildSnipeConfig() {
+  const sl = $("snipe-location");
+  const slOpt = sl && sl.options[sl.selectedIndex];
+  if (!slOpt || !slOpt.value) throw new Error("Pick a sniper location.");
+  const attendees = readAttendees();
+  const rows = $("snipe-rows").value.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+  if (rows.length < 1) throw new Error("Primary rows are required (e.g. E,F).");
+  return {
+    target_movie: $("snipe-movie").value.trim() || "Spider-Man: Brand New Day",
+    location_id: Number(sl.value),
+    location_name: slOpt.textContent,
+    hall_id: Number($("snipe-hall").value) || 6,
+    show_date: $("snipe-date").value.trim() || "2026-08-01",
+    time_start: $("snipe-start").value.trim() || "15:30",
+    time_end: $("snipe-end").value.trim() || "18:00",
+    poll_seconds: Number($("snipe-poll").value) || 75,
+    total_seats: Number($("snipe-total").value) || 36,
+    primary_rows: rows,
+    fill_row: ($("snipe-fill").value.trim().toUpperCase() || "G"),
+    trim_last: 2,
+    attendees,
+  };
+}
+
+async function loadSnipeConfig() {
+  try {
+    const cfg = await api("/api/snipe/config");
+    if (!cfg || cfg.saved === false || !cfg.target_movie) return;
+    $("snipe-movie").value = cfg.target_movie;
+    $("snipe-date").value = cfg.show_date;
+    const sl = $("snipe-location");
+    if (sl && cfg.location_id) sl.value = String(cfg.location_id);
+    $("snipe-hall").value = cfg.hall_id;
+    $("snipe-start").value = cfg.time_start;
+    $("snipe-end").value = cfg.time_end;
+    $("snipe-total").value = cfg.total_seats;
+    $("snipe-rows").value = (cfg.primary_rows || ["E", "F"]).join(",");
+    $("snipe-fill").value = cfg.fill_row || "G";
+    $("snipe-poll").value = cfg.poll_seconds;
+    setSnipeStatus(
+      `Saved target: ${cfg.target_movie} on ${cfg.show_date} — ${cfg.location_name} Hall ${cfg.hall_id}, ${cfg.time_start}-${cfg.time_end}. ${cfg.total_seats} seats (rows ${(cfg.primary_rows||[]).join(",")} minus last ${cfg.trim_last ?? 2}, fill ${cfg.fill_row}). ${cfg.attendees.length} attendees.`,
+      "ready",
+    );
+  } catch {
+    // no saved config yet
+  }
+}
+
+async function snipeSave() {
+  try {
+    const cfg = buildSnipeConfig();
+    await api("/api/snipe/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg),
+    });
+    setSnipeStatus(
+      `Saved. ${cfg.total_seats} seats (rows ${cfg.primary_rows.join(",")} minus last 2 each, fill ${cfg.fill_row}) across ${cfg.attendees.length} attendees. Ready to watch.`,
+      "ready",
+    );
+  } catch (error) {
+    setSnipeStatus(error.message, "error");
+  }
+}
+
+async function snipeStart() {
+  try {
+    const cfg = buildSnipeConfig();
+    delete cfg._seat_count;
+    await api("/api/snipe/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg),
+    });
+    $("snipe-start").hidden = true;
+    $("snipe-stop").hidden = false;
+    beginSnipePolling();
+    beginPolling(); // also reflect the group run once it hands off
+  } catch (error) {
+    setSnipeStatus(error.message, "error");
+  }
+}
+
+async function snipeStop() {
+  try {
+    await api("/api/snipe/stop", { method: "POST" });
+  } catch {
+    // ignore
+  }
+  stopSnipePolling();
+  $("snipe-start").hidden = false;
+  $("snipe-stop").hidden = true;
+}
+
+function beginSnipePolling() {
+  if (!snipePoll) snipePoll = window.setInterval(refreshSnipe, 2000);
+}
+
+function stopSnipePolling() {
+  if (snipePoll) window.clearInterval(snipePoll);
+  snipePoll = null;
+}
+
+async function refreshSnipe() {
+  try {
+    snipeState = await api("/api/snipe/state");
+    const ago = snipeState.ago_seconds == null ? "" : ` (last check ${snipeState.ago_seconds}s ago)`;
+    setSnipeStatus(snipeState.detail + ago, snipeStatusKind(snipeState.status));
+    const badge = $("snipe-badge");
+    badge.className = `run-badge ${snipeState.status}`;
+    badge.textContent = SNIPE_BADGES[snipeState.status] || snipeState.status;
+    if (!snipeState.busy && ["handed_off", "error", "stopped"].includes(snapeState.status)) {
+      stopSnipePolling();
+      $("snipe-start").hidden = false;
+      $("snipe-stop").hidden = true;
+    }
+  } catch {
+    // keep last status during a brief server hiccup
+  }
+}
+
 selects.location.addEventListener("change", onLocationChange);
 selects.date.addEventListener("change", onDateChange);
 selects.movie.addEventListener("change", onMovieChange);
@@ -528,9 +692,18 @@ document.querySelectorAll(".session-tab").forEach((tab) => {
   tab.addEventListener("click", () => setActivePayment(Number(tab.dataset.session)));
 });
 document.querySelectorAll(".payment-entry input").forEach((input) => input.addEventListener("input", updateStartButton));
+$("snipe-save").addEventListener("click", snipeSave);
+$("snipe-start").addEventListener("click", snipeStart);
+$("snipe-stop").addEventListener("click", snipeStop);
 
-Promise.all([api("/api/group/config"), refreshState()]).then(([loadedConfig]) => {
+Promise.all([api("/api/group/config"), refreshState(), api("/api/snipe/state")]).then(([loadedConfig, , snipe]) => {
   config = loadedConfig;
   if (runState?.busy) beginPolling();
+  loadSnipeConfig();
+  if (snipe?.busy) {
+    $("snipe-start").hidden = true;
+    $("snipe-stop").hidden = false;
+    beginSnipePolling();
+  }
   loadLocations();
 });

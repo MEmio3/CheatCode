@@ -213,3 +213,13 @@ select:disabled { color: #62576b; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
 }
+
+.sniper-card {
+  background: linear-gradient(180deg, rgba(156,69,223,.10), var(--panel));
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 22px;
+  margin-top: 16px;
+}
+.snipe-help { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 4px 0 14px; }
+.snipe-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
