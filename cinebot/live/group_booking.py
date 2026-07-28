@@ -129,17 +129,21 @@ def target_from_payload(payload: dict[str, Any]) -> BookingTarget:
     return target
 
 
-def payments_from_payload(payloads: list[dict[str, Any]]) -> list[PaymentRequest]:
+def payments_from_payload(
+    payloads: list[dict[str, Any]], *, allow_duplicate_identity: bool = False
+) -> list[PaymentRequest]:
     if not 1 <= len(payloads) <= 8:
         raise GroupPlanError("Between 1 and 8 payment sessions are required.")
     names = validate_names(
-        [str(item.get("name") or "") for item in payloads], len(payloads)
+        [str(item.get("name") or "") for item in payloads],
+        len(payloads),
+        allow_duplicates=allow_duplicate_identity,
     )
     phones = [
         validate_bkash_number(str(item.get("bkash_number") or ""))
         for item in payloads
     ]
-    if len(set(phones)) != len(phones):
+    if not allow_duplicate_identity and len(set(phones)) != len(phones):
         raise GroupPlanError("Use a different bKash number for each session.")
 
     requests: list[PaymentRequest] = []
@@ -166,12 +170,12 @@ def payments_from_payload(payloads: list[dict[str, Any]]) -> list[PaymentRequest
 
 
 class GroupBookingManager:
-    """Own one four-payment booking run for the local control page."""
+    """Own one configurable multi-payment booking run for the local control page."""
 
     def __init__(self) -> None:
         self.status = "idle"
         self.phase = "Ready"
-        self.detail = "Load a show, choose seats, then enter four payment details."
+        self.detail = "Load a show, choose seats, then enter payment details."
         self.error: Optional[str] = None
         self.show: Optional[dict[str, Any]] = None
         self.sessions: dict[str, PaymentSession] = {}
@@ -205,12 +209,19 @@ class GroupBookingManager:
         }
 
     async def start(
-        self, target_payload: dict[str, Any], payment_payloads: list[dict[str, Any]]
+        self,
+        target_payload: dict[str, Any],
+        payment_payloads: list[dict[str, Any]],
+        *,
+        allow_duplicate_identity: bool = False,
     ) -> str:
         if self.busy:
             raise GroupPlanError("A group booking is already running.")
         target = target_from_payload(target_payload)
-        payments = payments_from_payload(payment_payloads)
+        payments = payments_from_payload(
+            payment_payloads,
+            allow_duplicate_identity=allow_duplicate_identity,
+        )
         self.status = "starting"
         self.phase = "Rechecking selection"
         self.detail = "Confirming the show and selected seats against live data."
@@ -319,7 +330,7 @@ class GroupBookingManager:
                 elif len(completed) == len(self.sessions):
                     self.status = "completed"
                     self.phase = "Booking complete"
-                    self.detail = "All four payment sessions returned successfully."
+                    self.detail = "All payment sessions returned successfully."
                 else:
                     self.status = "attention"
                     self.phase = "Finish in bKash"
@@ -468,7 +479,7 @@ class GroupBookingManager:
 
     async def _guest_login(self, page) -> tuple[str, str]:
         await page.goto(ORIGIN, wait_until="domcontentloaded", timeout=30_000)
-        button = page.locator("button.guest-login").first
+        button = page.get_by_role("button", name="Guest Login", exact=True)
         await button.wait_for(state="visible", timeout=15_000)
         async with page.expect_response(
             lambda response: "/api/v1/guest-login" in response.url,
@@ -495,8 +506,18 @@ class GroupBookingManager:
         )
         page = await context.new_page()
         try:
+            await self._show_window_label(page, session, "Opening")
+            stagger = max(0, session.index - 1) * 5
+            if stagger:
+                self._set_session(
+                    session,
+                    "queued",
+                    f"Launch position {session.index}; opening in {stagger} seconds.",
+                )
+                await asyncio.sleep(stagger)
             self._set_session(session, "opening", "Opening a private session...")
             await self._guest_login(page)
+            await self._show_window_label(page, session, "Opening")
             self._set_session(session, "navigating", "Opening the selected show...")
             await self._click_text(page, target.location_name, exact=False)
             await self._click_text(page, self._date_pattern(target.show_date))
@@ -530,14 +551,12 @@ class GroupBookingManager:
                 await page.wait_for_timeout(200)
             await page.wait_for_timeout(800)  # seat map renders after qty is set
 
-            await page.get_by_text(session.chunk.labels[0], exact=True).first.wait_for(
-                state="visible", timeout=15_000
-            )
             for label in session.chunk.labels:
                 # a SweetAlert2 popup ("Do you want to allow...") can intercept the
                 # first seat click and silently drop it; dismiss before every click.
                 await self._dismiss_swal2(page)
-                await page.get_by_text(label, exact=True).first.click(timeout=5_000)
+                seat = await self._wait_for_seat(page, label)
+                await seat.click(timeout=5_000)
 
             selected_text = await page.locator(".selected_seat").inner_text(timeout=5_000)
             accepted = set(re.findall(r"\b[A-Z]{1,3}\d+\b", selected_text.upper()))
@@ -621,6 +640,7 @@ class GroupBookingManager:
                 "Enter the OTP from this payment's bKash SMS.",
             )
             session.otp_required = True
+            await self._show_window_label(page, session, "OTP required")
             code = await asyncio.wait_for(session._otp_future, timeout=180)
             await otp_input.fill(code)
             code = ""
@@ -641,6 +661,7 @@ class GroupBookingManager:
                 "OTP accepted. Enter the PIN only in this secure bKash window.",
             )
             session.pin_required = True
+            await self._show_window_label(page, session, "Enter PIN in bKash")
             await self._wait_for_payment_result(page, session)
         except asyncio.CancelledError:
             raise
@@ -726,6 +747,44 @@ class GroupBookingManager:
         locator = page.get_by_text(value, exact=exact).first
         await locator.wait_for(state="visible", timeout=15_000)
         await locator.click()
+
+    async def _show_window_label(self, page, session: PaymentSession, state: str) -> None:
+        """Put the payment order directly on the real payment browser window."""
+        try:
+            await page.evaluate(
+                """({index, state}) => {
+                    let el = document.getElementById('cinebot-payment-order');
+                    if (!el) {
+                        el = document.createElement('div');
+                        el.id = 'cinebot-payment-order';
+                        el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 16px;background:#24112f;color:#fff;font:700 16px system-ui;text-align:center;box-shadow:0 2px 8px #0008';
+                        document.body.prepend(el);
+                    }
+                    el.textContent = 'CineBot · Payment #' + index + ' · ' + state;
+                }""",
+                {"index": session.index, "state": state},
+            )
+        except Exception:
+            pass
+
+    async def _wait_for_seat(self, page, label: str):
+        """Find a rendered seat despite Cineplex changing its seat DOM shape."""
+        selectors = (
+            page.locator(f'[data-seat="{label}"]').first,
+            page.get_by_text(label, exact=True).first,
+            page.locator(f'a:has-text("{label}")').first,
+        )
+        last_error: Exception | None = None
+        for locator in selectors:
+            try:
+                await locator.wait_for(state="visible", timeout=5_000)
+                return locator
+            except Exception as exc:
+                last_error = exc
+        raise GroupPlanError(
+            f"Seat {label} is no longer visible in the live seat map; "
+            "reload the show to refresh availability."
+        ) from last_error
 
     async def _wait_enabled(self, locator, *, timeout_ms: int) -> None:
         deadline = time.monotonic() + timeout_ms / 1_000

@@ -5,7 +5,7 @@ a live-computed block of seats.
 Seat plan is a rule, not a fixed label list, so it adapts to the new show's
 layout when the target drops:
 
-    take all of the primary rows (default E and F) except the last `trim_last`
+    take all of the configured primary rows (or choose automatically when empty) except the last `trim_last`
     seats of each, then fill the remainder from `fill_row` (default G) until
     `total_seats` (default 36). The assembled labels are split into <=10 chunks
     and zipped one-to-one with the four attendees.
@@ -22,9 +22,11 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Optional
 
-from .group import GroupPlanError, movie_matches, parse_show_time
+from .config_store import CredentialStore, telegram_env_credentials
+from .group import GroupPlanError, movie_matches, parse_show_time, validate_bkash_number, validate_names
 
 log = logging.getLogger("cinebot.sniper")
 
@@ -41,19 +43,20 @@ class SnipeAttendee:
 
 @dataclass
 class SnipeConfig:
-    target_movie: str = "Spider-Man: Brand New Day"
-    location_id: int = 1
-    location_name: str = "Bashundhara Shopping Mall"
-    hall_id: int = 6
-    show_date: str = "2026-08-01"  # 1 Aug
-    time_start: str = "15:30"  # 3:30 PM
-    time_end: str = "18:00"  # 6:00 PM
+    target_movie: str = ""
+    location_id: int = 0
+    location_name: str = ""
+    hall_ids: list[int] = field(default_factory=list)
+    show_date: str = ""
+    time_start: str = ""  # Empty means any show time.
+    time_end: str = ""
     poll_seconds: int = 75
-    total_seats: int = 36
-    primary_rows: list[str] = field(default_factory=lambda: ["E", "F"])
-    fill_row: str = "G"
-    trim_last: int = 2
-    num_payments: int = 4
+    total_seats: int = 1
+    primary_rows: list[str] = field(default_factory=list)
+    fill_row: str = ""
+    trim_last: int = 0
+    num_payments: int = 1
+    allow_duplicate_identity: bool = False
     attendees: list[SnipeAttendee] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,7 +64,7 @@ class SnipeConfig:
             "target_movie": self.target_movie,
             "location_id": self.location_id,
             "location_name": self.location_name,
-            "hall_id": self.hall_id,
+            "hall_ids": list(self.hall_ids),
             "show_date": self.show_date,
             "time_start": self.time_start,
             "time_end": self.time_end,
@@ -71,25 +74,27 @@ class SnipeConfig:
             "fill_row": self.fill_row,
             "trim_last": self.trim_last,
             "num_payments": self.num_payments,
+            "allow_duplicate_identity": self.allow_duplicate_identity,
             "attendees": [{"name": a.name, "bkash": a.bkash} for a in self.attendees],
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "SnipeConfig":
         return cls(
-            target_movie=str(d.get("target_movie") or "Spider-Man: Brand New Day"),
-            location_id=int(d.get("location_id") or 1),
-            location_name=str(d.get("location_name") or "Bashundhara Shopping Mall"),
-            hall_id=int(d.get("hall_id") or 6),
-            show_date=str(d.get("show_date") or "2026-08-01"),
-            time_start=str(d.get("time_start") or "15:30"),
-            time_end=str(d.get("time_end") or "18:00"),
+            target_movie=str(d.get("target_movie") or ""),
+            location_id=int(d.get("location_id") or 0),
+            location_name=str(d.get("location_name") or ""),
+            hall_ids=[int(value) for value in (d.get("hall_ids") or ([d.get("hall_id")] if d.get("hall_id") else []))],
+            show_date=str(d.get("show_date") or ""),
+            time_start=str(d.get("time_start") or ""),
+            time_end=str(d.get("time_end") or ""),
             poll_seconds=int(d.get("poll_seconds") or 75),
-            total_seats=int(d.get("total_seats") or 36),
-            primary_rows=[str(r) for r in (d.get("primary_rows") or ["E", "F"])],
-            fill_row=str(d.get("fill_row") or "G"),
-            trim_last=int(d.get("trim_last") or 2),
-            num_payments=int(d.get("num_payments") or 4),
+            total_seats=int(d.get("total_seats") or 1),
+            primary_rows=[str(r) for r in (d.get("primary_rows") or [])],
+            fill_row=str(d.get("fill_row") or ""),
+            trim_last=int(d.get("trim_last") or 0),
+            num_payments=int(d.get("num_payments") or 1),
+            allow_duplicate_identity=bool(d.get("allow_duplicate_identity", False)),
             attendees=[
                 SnipeAttendee(name=str(a.get("name") or ""), bkash=str(a.get("bkash") or ""))
                 for a in (d.get("attendees") or [])
@@ -99,14 +104,26 @@ class SnipeConfig:
     def validate(self) -> None:
         if not self.target_movie.strip():
             raise GroupPlanError("Pick a target movie to watch for.")
-        if self.location_id <= 0 or self.hall_id <= 0:
-            raise GroupPlanError("Location and hall are required.")
-        parse_show_time(self.time_start)
-        parse_show_time(self.time_end)
+        if self.location_id <= 0:
+            raise GroupPlanError("A location is required.")
+        try:
+            date.fromisoformat(self.show_date)
+        except ValueError as exc:
+            raise GroupPlanError("Show date must use YYYY-MM-DD.") from exc
+        if len(set(self.hall_ids)) != len(self.hall_ids) or any(hall <= 0 for hall in self.hall_ids):
+            raise GroupPlanError("Hall preferences must be distinct positive numbers.")
+        if bool(self.time_start) != bool(self.time_end):
+            raise GroupPlanError("Set both show-time limits or leave both empty.")
+        if self.time_start and parse_show_time(self.time_start) >= parse_show_time(self.time_end):
+            raise GroupPlanError("Show-time start must be earlier than the end.")
         if not (1 <= self.total_seats <= 40):
             raise GroupPlanError("Total seats must be between 1 and 40.")
-        if len(self.primary_rows) < 1:
-            raise GroupPlanError("Pick at least one primary row.")
+        self.primary_rows = [row.strip().upper() for row in self.primary_rows if row.strip()]
+        self.fill_row = self.fill_row.strip().upper()
+        if len(set(self.primary_rows)) != len(self.primary_rows) or (self.fill_row and self.fill_row in self.primary_rows):
+            raise GroupPlanError("Rows must be unique; the fill row cannot also be a primary row.")
+        if self.fill_row and not self.primary_rows:
+            raise GroupPlanError("Choose primary rows before choosing a fill row.")
         min_payments = (self.total_seats + SITE_TRANSACTION_CAP - 1) // SITE_TRANSACTION_CAP
         if not min_payments <= self.num_payments <= 8:
             raise GroupPlanError(
@@ -118,11 +135,14 @@ class SnipeConfig:
                 f"{self.num_payments} payment session(s) selected but "
                 f"{len(self.attendees)} attendee(s) provided."
             )
-        for i, a in enumerate(self.attendees, 1):
-            if not a.name.strip():
-                raise GroupPlanError(f"Attendee {i} needs a name.")
-            if not a.bkash.strip():
-                raise GroupPlanError(f"Attendee {i} needs a bKash number.")
+        validate_names(
+            [attendee.name for attendee in self.attendees],
+            self.num_payments,
+            allow_duplicates=self.allow_duplicate_identity,
+        )
+        phones = [validate_bkash_number(attendee.bkash) for attendee in self.attendees]
+        if not self.allow_duplicate_identity and len(set(phones)) != len(phones):
+            raise GroupPlanError("Use a different bKash number for each attendee.")
 
 
 def save_config(config: SnipeConfig) -> str:
@@ -191,6 +211,14 @@ def compute_seat_plan(
         by_row[str(row.get("label") or "")] = cells
 
     picked: list[dict[str, Any]] = []
+    if not primary_rows:
+        automatic_rows = [row for row, cells in by_row.items() if cells]
+        picked = [cell for row in automatic_rows for cell in by_row[row]][:total]
+        labels = [str(c["label"]) for c in picked]
+        if len(labels) != total:
+            raise GroupPlanError(f"Could not find {total} available seats in the live layout.")
+        return labels
+
     for r in primary_rows:
         cells = by_row.get(r, [])
         if len(cells) <= trim_last:
@@ -245,6 +273,7 @@ class SniperManager:
         self.last_poll_at: Optional[float] = None
         self._task: Optional[asyncio.Task] = None
         self._user_stop = False
+        self._last_report_at = 0.0
 
     @property
     def busy(self) -> bool:
@@ -272,10 +301,13 @@ class SniperManager:
         self.status = "watching"
         self.detail = (
             f"Watching for '{config.target_movie}' on {config.show_date} at "
-            f"{config.location_name} Hall {config.hall_id} "
-            f"({config.time_start}-{config.time_end}); {config.total_seats} seats."
+            f"{config.location_name} "
+            f"(halls {', '.join(map(str, config.hall_ids)) or 'any'}, "
+            f"times {config.time_start or 'any'}-{config.time_end or 'any'}); "
+            f"{config.total_seats} seats."
         )
         self.last_poll_at = None
+        self._last_report_at = 0.0
         self._task = asyncio.create_task(self._watch(), name="snipe-watch")
 
     async def stop(self) -> bool:
@@ -316,6 +348,7 @@ class SniperManager:
                 except Exception as exc:
                     log.warning("sniper poll error: %s", exc)
                     self.detail = f"Poll error: {exc}. Retrying in {cfg.poll_seconds}s."
+                    await self._report(cfg, self.detail)
                 if self.status in ("handed_off", "error"):
                     break
                 await asyncio.sleep(max(15, cfg.poll_seconds))
@@ -344,6 +377,7 @@ class SniperManager:
                 f"{cfg.show_date} is not published at {cfg.location_name} yet. "
                 f"Next poll in {cfg.poll_seconds}s."
             )
+            await self._report(cfg, self.detail)
             return
 
         movie = next(
@@ -358,16 +392,17 @@ class SniperManager:
                 f"'{cfg.target_movie}' is not bookable on {cfg.show_date} yet. "
                 f"Next poll in {cfg.poll_seconds}s."
             )
+            await self._report(cfg, self.detail)
             return
 
         shows = await self.catalog.shows(cfg.location_id, int(movie["id"]), cfg.show_date)
         chosen = self._pick_show(shows, cfg)
         if chosen is None:
             self.detail = (
-                f"'{cfg.target_movie}' is listed on {cfg.show_date}, but no Hall "
-                f"{cfg.hall_id} show between {cfg.time_start} and {cfg.time_end}. "
+                f"'{cfg.target_movie}' is listed on {cfg.show_date}, but no preferred show is available. "
                 f"Next poll in {cfg.poll_seconds}s."
             )
+            await self._report(cfg, self.detail)
             return
 
         # resolve seats + build the four payments
@@ -376,18 +411,47 @@ class SniperManager:
             f"DETECTED {chosen.get('movie_title')} — {chosen.get('hall')} "
             f"{chosen.get('time_label')}. Resolving {cfg.total_seats} seats."
         )
+        await self._report(cfg, self.detail, force=True)
         target, payments = await self._build_payload(chosen, cfg, int(movie["id"]))
         try:
-            await self.group.start(target, payments)
+            await self.group.start(
+                target,
+                payments,
+                allow_duplicate_identity=cfg.allow_duplicate_identity,
+            )
         except GroupPlanError as exc:
             self.status = "error"
             self.detail = f"Detected, but the booking would not start: {exc}"
+            await self._report(cfg, self.detail, force=True)
             return
         self.status = "handed_off"
         self.detail = (
             "Target found and handed off to the group runner. "
             "Watch the Live run panel for the four sessions."
         )
+        await self._report(cfg, self.detail, force=True)
+
+    async def _report(self, cfg: SnipeConfig, message: str, *, force: bool = False) -> None:
+        if not force and time.monotonic() - self._last_report_at < 1_800:
+            return
+        self._last_report_at = time.monotonic()
+        try:
+            store = CredentialStore.auto()
+            env_token, env_chat_id = telegram_env_credentials()
+            token = env_token or store.get("telegram_bot_token")
+            chat_id = env_chat_id or store.get("telegram_chat_id")
+            if not token or not chat_id:
+                return
+            from telegram import Bot
+
+            async with Bot(token=token) as bot:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"CineBot watcher: {message}",
+                    disable_web_page_preview=True,
+                )
+        except Exception as exc:
+            log.warning("Telegram watcher report failed: %s", exc)
 
     async def _build_payload(
         self, show: dict, cfg: SnipeConfig, movie_id: int
@@ -419,8 +483,8 @@ class SniperManager:
             "movie_id": int(show.get("movie_id") or movie_id),
             "movie_title": str(show.get("movie_title") or cfg.target_movie),
             "program_id": int(show.get("program_id") or 0),
-            "screen_id": int(show.get("screen_id") or cfg.hall_id),
-            "hall_name": str(show.get("hall") or f"Hall {cfg.hall_id}"),
+            "screen_id": int(show.get("screen_id") or 0),
+            "hall_name": str(show.get("hall") or "Preferred hall"),
             "show_time": str(show.get("time") or ""),
             "seat_type_id": seat_type_id,
             "seat_type_name": str(seat_type.get("title") or "Premium"),
@@ -437,19 +501,17 @@ class SniperManager:
         return target, payments
 
     def _pick_show(self, shows: list[dict], cfg: SnipeConfig) -> Optional[dict]:
-        start = parse_show_time(cfg.time_start)
-        end = parse_show_time(cfg.time_end)
-        midpoint = (
-            start.hour * 60 + start.minute + end.hour * 60 + end.minute
-        ) // 2
+        start = parse_show_time(cfg.time_start) if cfg.time_start else None
+        end = parse_show_time(cfg.time_end) if cfg.time_end else None
+        midpoint = ((start.hour * 60 + start.minute + end.hour * 60 + end.minute) // 2) if start and end else 0
         candidates: list[tuple[int, dict]] = []
         for show in shows:
-            if int(show.get("screen_id") or 0) != int(cfg.hall_id):
+            if cfg.hall_ids and int(show.get("screen_id") or 0) not in cfg.hall_ids:
                 continue
             parsed = parse_show_time(str(show.get("time") or ""))
-            if not start <= parsed <= end:
+            if start and end and not start <= parsed <= end:
                 continue
-            candidates.append((abs((parsed.hour * 60 + parsed.minute) - midpoint), show))
+            candidates.append((abs((parsed.hour * 60 + parsed.minute) - midpoint) if start else 0, show))
         if not candidates:
             return None
         candidates.sort(key=lambda item: item[0])

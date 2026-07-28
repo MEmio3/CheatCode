@@ -20,6 +20,7 @@ let runState = null;
 let pollHandle = null;
 let activeOtpSessionId = null;
 let submittingOtp = false;
+let savedSnipeLocationId = "";
 
 const STATUS_LABELS = {
   idle: "Ready",
@@ -117,7 +118,7 @@ async function loadLocations() {
         o.textContent = item.title;
         sl.appendChild(o);
       });
-      if ([...sl.options].some((o) => o.value === "1")) sl.value = "1";
+      if ([...sl.options].some((o) => o.value === savedSnipeLocationId)) sl.value = savedSnipeLocationId;
     }
     setCatalogStatus(
       `${payload.locations.length} Cineplex locations loaded. Pick from top to bottom.`,
@@ -282,11 +283,11 @@ function setActivePayment(index) {
 }
 
 function paymentCount() {
-  return Math.max(1, Math.min(8, Number($("payment-count")?.value) || 4));
+  return Math.max(1, Math.min(8, Number($("payment-count")?.value) || 1));
 }
 
 function minPayments() {
-  return Math.ceil((Number($("snipe-total")?.value) || 36) / 10);
+  return Math.ceil((Number($("snipe-total")?.value) || 1) / 10);
 }
 
 function clampPaymentCount() {
@@ -389,10 +390,11 @@ function readPayments() {
     bkash_number: normalizePhone(entry.querySelector(".phone-input").value),
     seats: [...assignments[index]],
   }));
-  if (payments.some((item) => !item.name)) throw new Error("Enter all four real attendee names.");
-  if (new Set(payments.map((item) => item.name.toLocaleLowerCase())).size !== 4) throw new Error("Use a different attendee name for each payment.");
-  if (payments.some((item) => !/^01[3-9]\d{8}$/.test(item.bkash_number))) throw new Error("Enter four valid Bangladesh bKash numbers.");
-  if (new Set(payments.map((item) => item.bkash_number)).size !== 4) throw new Error("Use four different bKash numbers.");
+  if (payments.some((item) => !item.name)) throw new Error("Enter an attendee name for every payment.");
+  const allowDuplicates = $("allow-duplicate-identity").checked;
+  if (!allowDuplicates && new Set(payments.map((item) => item.name.toLocaleLowerCase())).size !== payments.length) throw new Error("Use a different attendee name for each payment, or enable the duplicate-identity override.");
+  if (payments.some((item) => !/^01[3-9]\d{8}$/.test(item.bkash_number))) throw new Error("Enter a valid Bangladesh bKash number for every payment.");
+  if (!allowDuplicates && new Set(payments.map((item) => item.bkash_number)).size !== payments.length) throw new Error("Use a different bKash number per payment, or enable the duplicate-identity override.");
   if (payments.some((item) => item.seats.length < 1 || item.seats.length > 10)) throw new Error("Assign between 1 and 10 seats to every payment.");
   return payments;
 }
@@ -425,7 +427,7 @@ async function startRun() {
   $("form-error").textContent = "";
   let body;
   try {
-    body = { target: buildTarget(), payments: readPayments() };
+    body = { target: buildTarget(), payments: readPayments(), allow_duplicate_identity: $("allow-duplicate-identity").checked };
   } catch (error) {
     $("form-error").textContent = error.message;
     return;
@@ -612,9 +614,9 @@ function readAttendees() {
     name: entry.querySelector(".name-input").value.replace(/\s+/g, " ").trim(),
     bkash: normalizePhone(entry.querySelector(".phone-input").value),
   }));
-  if (attendees.some((item) => !item.name)) throw new Error("Enter all four attendee names in step 03.");
-  if (attendees.some((item) => !/^01[3-9]\d{8}$/.test(item.bkash))) throw new Error("Enter four valid Bangladesh bKash numbers in step 03.");
-  if (new Set(attendees.map((item) => item.bkash)).size !== attendees.length) throw new Error("Use a different bKash number per attendee.");
+  if (attendees.some((item) => !item.name)) throw new Error("Enter every attendee name in step 03.");
+  if (attendees.some((item) => !/^01[3-9]\d{8}$/.test(item.bkash))) throw new Error("Enter a valid Bangladesh bKash number for every attendee.");
+  if (!$("allow-duplicate-identity")?.checked && new Set(attendees.map((item) => item.bkash)).size !== attendees.length) throw new Error("Use a different bKash number per attendee, or enable the duplicate-identity override.");
   return attendees;
 }
 
@@ -622,26 +624,34 @@ function buildSnipeConfig() {
   const sl = $("snipe-location");
   const slOpt = sl && sl.options[sl.selectedIndex];
   if (!slOpt || !slOpt.value) throw new Error("Pick a sniper location.");
+  if (!$("snipe-movie").value.trim()) throw new Error("Enter the movie title to watch for.");
+  if (!$("snipe-date").value.trim()) throw new Error("Choose the required show date.");
   if (paymentCount() < minPayments()) {
     throw new Error(`Need at least ${minPayments()} payment(s) for ${$("snipe-total").value} seats (10 per payment).`);
   }
   const attendees = readAttendees();
   const rows = $("snipe-rows").value.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+  const hallText = $("snipe-halls").value.trim();
+  const hallIds = hallText ? hallText.split(",").map((value) => Number(value.trim())) : [];
+  if (hallIds.some((value) => !Number.isInteger(value) || value < 1)) {
+    throw new Error("Preferred halls must be comma-separated positive numbers (e.g. 6, 7).");
+  }
   if (rows.length < 1) throw new Error("Primary rows are required (e.g. E,F).");
   return {
-    target_movie: $("snipe-movie").value.trim() || "Spider-Man: Brand New Day",
+    target_movie: $("snipe-movie").value.trim(),
     location_id: Number(sl.value),
     location_name: slOpt.textContent,
-    hall_id: Number($("snipe-hall").value) || 6,
-    show_date: $("snipe-date").value.trim() || "2026-08-01",
-    time_start: $("snipe-start").value.trim() || "15:30",
-    time_end: $("snipe-end").value.trim() || "18:00",
+    hall_ids: hallIds,
+    show_date: $("snipe-date").value.trim(),
+    time_start: $("snipe-start").value.trim(),
+    time_end: $("snipe-end").value.trim(),
     poll_seconds: Number($("snipe-poll").value) || 75,
-    total_seats: Number($("snipe-total").value) || 36,
+    total_seats: Number($("snipe-total").value) || 1,
     primary_rows: rows,
-    fill_row: ($("snipe-fill").value.trim().toUpperCase() || "G"),
-    trim_last: 2,
+    fill_row: $("snipe-fill").value.trim().toUpperCase(),
+    trim_last: 0,
     num_payments: paymentCount(),
+    allow_duplicate_identity: $("allow-duplicate-identity").checked,
     attendees,
   };
 }
@@ -653,15 +663,15 @@ async function loadSnipeConfig() {
     $("snipe-movie").value = cfg.target_movie;
     $("snipe-date").value = cfg.show_date;
     const sl = $("snipe-location");
-    if (sl && cfg.location_id) sl.value = String(cfg.location_id);
-    $("snipe-hall").value = cfg.hall_id;
+    if (sl && cfg.location_id) savedSnipeLocationId = String(cfg.location_id);
+    $("snipe-halls").value = (cfg.hall_ids || []).join(",");
     $("snipe-start").value = cfg.time_start;
     $("snipe-end").value = cfg.time_end;
     $("snipe-total").value = cfg.total_seats;
-    $("payment-count").value = String(cfg.num_payments || 4);
+    $("payment-count").value = String(cfg.num_payments || 1);
     clampPaymentCount();
-    $("snipe-rows").value = (cfg.primary_rows || ["E", "F"]).join(",");
-    $("snipe-fill").value = cfg.fill_row || "G";
+    $("snipe-rows").value = (cfg.primary_rows || []).join(",");
+    $("snipe-fill").value = cfg.fill_row || "";
     $("snipe-poll").value = cfg.poll_seconds;
     applyPaymentCount();
     (cfg.attendees || []).forEach((att, i) => {
@@ -671,11 +681,42 @@ async function loadSnipeConfig() {
       if (att.bkash) e.querySelector(".phone-input").value = att.bkash;
     });
     setSnipeStatus(
-      `Saved target: ${cfg.target_movie} on ${cfg.show_date} — ${cfg.location_name} Hall ${cfg.hall_id}, ${cfg.time_start}-${cfg.time_end}. ${cfg.total_seats} seats (rows ${(cfg.primary_rows||[]).join(",")} minus last ${cfg.trim_last ?? 2}, fill ${cfg.fill_row}). ${cfg.attendees.length} attendees.`,
+      `Saved target: ${cfg.target_movie} on ${cfg.show_date} — ${cfg.location_name}, halls ${(cfg.hall_ids||[]).join(",") || "any"}, times ${cfg.time_start || "any"}-${cfg.time_end || "any"}. ${cfg.total_seats} seats (rows ${(cfg.primary_rows||[]).join(",")} minus last ${cfg.trim_last ?? 2}, fill ${cfg.fill_row}). ${cfg.attendees.length} attendees.`,
       "ready",
     );
   } catch {
     // no saved config yet
+  }
+}
+
+async function loadTelegramConfig() {
+  try {
+    const cfg = await api("/api/telegram/config");
+    $("telegram-chat").value = cfg.chat_id || "";
+    $("telegram-token").placeholder = cfg.bot_token_set ? "Bot token saved securely" : "Stored in Windows Credential Manager";
+  } catch {
+    // Telegram is optional.
+  }
+}
+
+async function saveTelegramConfig() {
+  const token = $("telegram-token").value.trim();
+  const chatId = $("telegram-chat").value.trim();
+  if (!token || !chatId) {
+    setSnipeStatus("Enter both the Telegram bot token and chat ID.", "error");
+    return;
+  }
+  try {
+    await api("/api/telegram/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bot_token: token, chat_id: chatId }),
+    });
+    $("telegram-token").value = "";
+    $("telegram-token").placeholder = "Bot token saved securely";
+    setSnipeStatus("Telegram saved. The watcher will send a status update every 30 minutes and immediately on a match or error.", "ready");
+  } catch (error) {
+    setSnipeStatus(error.message, "error");
   }
 }
 
@@ -688,7 +729,7 @@ async function snipeSave() {
       body: JSON.stringify(cfg),
     });
     setSnipeStatus(
-      `Saved. ${cfg.total_seats} seats (rows ${cfg.primary_rows.join(",")} minus last 2 each, fill ${cfg.fill_row}) across ${cfg.attendees.length} attendees. Ready to watch.`,
+      `Saved. ${cfg.total_seats} seats using ${cfg.primary_rows.length ? `rows ${cfg.primary_rows.join(",")}` : "automatic seat selection"} across ${cfg.attendees.length} attendees. Ready to watch.`,
       "ready",
     );
   } catch (error) {
@@ -742,7 +783,7 @@ async function refreshSnipe() {
     const badge = $("snipe-badge");
     badge.className = `run-badge ${snipeState.status}`;
     badge.textContent = SNIPE_BADGES[snipeState.status] || snipeState.status;
-    if (!snipeState.busy && ["handed_off", "error", "stopped"].includes(snapeState.status)) {
+    if (!snipeState.busy && ["handed_off", "error", "stopped"].includes(snipeState.status)) {
       stopSnipePolling();
       $("snipe-start").hidden = false;
       $("snipe-stop").hidden = true;
@@ -771,6 +812,7 @@ $("otp-code").addEventListener("keydown", (event) => {
 $("snipe-total").addEventListener("input", () => { clampPaymentCount(); applyPaymentCount(); });
 $("payment-count").addEventListener("input", () => { clampPaymentCount(); applyPaymentCount(); });
 $("snipe-save").addEventListener("click", snipeSave);
+$("telegram-save").addEventListener("click", saveTelegramConfig);
 $("snipe-start").addEventListener("click", snipeStart);
 $("snipe-stop").addEventListener("click", snipeStop);
 
@@ -779,6 +821,7 @@ Promise.all([api("/api/group/config"), refreshState(), api("/api/snipe/state")])
   applyPaymentCount();
   if (runState?.busy) beginPolling();
   loadSnipeConfig();
+  loadTelegramConfig();
   if (snipe?.busy) {
     $("snipe-start").hidden = true;
     $("snipe-stop").hidden = false;

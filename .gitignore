@@ -11,6 +11,8 @@ env/
 
 # secrets / local state
 .env
+.env.*
+!.env.example
 config.local.toml
 *.session
 *.session.json
@@ -25,6 +27,16 @@ recon_captures/
 *.png
 live_seats.json
 .claude/
+.codex/
+.agents/
+graphify-out/
+
+# local logs / caches
+*.log
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # IDE
 .vscode/

@@ -37,6 +37,19 @@ SENSITIVE = {"telegram_bot_token"}
 FORBIDDEN = {"bkash_pin", "pin", "password", "card_cvv", "cvv"}
 
 
+def telegram_env_credentials() -> tuple[Optional[str], Optional[str]]:
+    """Read optional personal-tool Telegram settings from environment/.env."""
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+    token = os.getenv("telegram_bot_token") or os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("userID") or os.getenv("USER_ID") or os.getenv("TELEGRAM_CHAT_ID")
+    return token.strip() if token else None, chat_id.strip() if chat_id else None
+
+
 class CredentialBackend(ABC):
     @abstractmethod
     def get(self, key: str) -> Optional[str]: ...

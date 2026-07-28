@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment order</title>
+<style>body{font:16px system-ui;background:#100b16;color:#f5eafa;margin:32px;max-width:720px}article{display:flex;gap:18px;align-items:center;padding:16px;margin:10px 0;border:1px solid #493653;border-radius:12px}b{font-size:28px;color:#f2b3ff}small{display:block;color:#cdbbd2;margin-top:4px}.muted{color:#cdbbd2}</style></head>
+<body><h1>Payment launch order</h1><p class="muted">Sessions open five seconds apart. Use the number below to match each browser window and OTP.</p><div id="sessions" class="muted">Waiting for a run...</div>
+<script>
+async function refresh(){try{const r=await fetch("/api/group/state");const s=await r.json();const rows=s.sessions||[];document.querySelector("#sessions").innerHTML=rows.length?rows.map(x=>"<article><b>#"+x.index+"</b><div><strong>"+x.name+" · "+x.phone_mask+"</strong><small>"+x.status+": "+x.detail+"</small></div></article>").join(""):"Waiting for a run..."}catch{}}
+refresh();setInterval(refresh,1000);
+</script></body></html>

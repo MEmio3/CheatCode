@@ -322,7 +322,7 @@ class GroupBookingManager:
 
     async def _guest_login(self, page) -> tuple[str, str]:
         await page.goto(ORIGIN, wait_until="domcontentloaded", timeout=30_000)
-        button = page.locator("button.guest-login").first
+        button = page.get_by_role("button", name="Guest Login", exact=True)
         await button.wait_for(state="visible", timeout=15_000)
         async with page.expect_response(
             lambda response: "/api/v1/guest-login" in response.url,
