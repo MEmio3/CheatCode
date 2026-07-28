@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b0711" />
+  <title>Cineplex Group Booker</title>
+  <link rel="stylesheet" href="/static/picker.css?v=2" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="eyebrow"><span></span> Live Cineplex control</div>
+      <h1>Pick the show. Pick every seat. Move together.</h1>
+      <p>Four synchronized bKash sessions, controlled from one local page.</p>
+    </header>
+
+    <section class="picker-card">
+      <div class="section-head">
+        <div><span class="step">01</span><h2>Live show picker</h2></div>
+        <button id="reload-catalog" class="quiet-button" type="button">Reload schedule</button>
+      </div>
+      <div id="catalog-status" class="inline-status loading" role="status">
+        Connecting to the public Cineplex schedule...
+      </div>
+      <div class="picker-grid">
+        <label><span>Location</span><select id="location-select" disabled><option>Loading locations...</option></select></label>
+        <label><span>Date</span><select id="date-select" disabled><option>Pick location first</option></select></label>
+        <label><span>Movie</span><select id="movie-select" disabled><option>Pick date first</option></select></label>
+        <label><span>Hall &amp; show time</span><select id="show-select" disabled><option>Pick movie first</option></select></label>
+        <label><span>Seat class</span><select id="class-select" disabled><option>Pick show first</option></select></label>
+      </div>
+      <div id="show-summary" class="show-summary empty">
+        Published dates, movies, halls, times and prices appear here directly from Cineplex.
+      </div>
+    </section>
+
+    <section id="seat-stage" class="seat-card locked">
+      <div class="section-head">
+        <div><span class="step">02</span><h2>Choose exact seats</h2></div>
+        <div class="seat-total"><strong id="seat-count">0</strong><span>/ 40 selected</span></div>
+      </div>
+      <div class="assign-bar">
+        <div>
+          <strong>Assign clicks to</strong>
+          <span>Each payment can hold up to 10 seats.</span>
+        </div>
+        <div class="session-tabs" role="tablist" aria-label="Active payment session">
+          <button class="session-tab active s1" data-session="0" type="button">Payment 1 <b>0/10</b></button>
+          <button class="session-tab s2" data-session="1" type="button">Payment 2 <b>0/10</b></button>
+          <button class="session-tab s3" data-session="2" type="button">Payment 3 <b>0/10</b></button>
+          <button class="session-tab s4" data-session="3" type="button">Payment 4 <b>0/10</b></button>
+        </div>
+      </div>
+      <div class="screen-line"><span>SCREEN</span></div>
+      <div id="seat-map" class="seat-map">
+        <div class="seat-placeholder">Choose a show and seat class to load its live seat map.</div>
+      </div>
+      <div class="seat-legend">
+        <span><i class="available"></i>Available</span>
+        <span><i class="taken"></i>Taken</span>
+        <span><i class="chosen"></i>Your selection</span>
+      </div>
+      <div id="seat-error" class="inline-error" role="alert"></div>
+    </section>
+
+    <div class="work-grid">
+      <section class="payment-panel">
+        <div class="section-head">
+          <div><span class="step">03</span><h2>Four payment details</h2></div>
+          <span class="memory-pill">Memory only</span>
+        </div>
+        <div id="payment-fields" class="payment-fields">
+          <article class="payment-entry s1" data-payment="0">
+            <div class="payment-title"><b>01</b><div><strong>Payment 1</strong><span class="payment-seats">No seats assigned</span></div></div>
+            <label><span>Attendee name</span><input class="name-input" autocomplete="name" placeholder="Real attendee name" /></label>
+            <label><span>bKash number</span><input class="phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="01XXXXXXXXX" /></label>
+          </article>
+          <article class="payment-entry s2" data-payment="1">
+            <div class="payment-title"><b>02</b><div><strong>Payment 2</strong><span class="payment-seats">No seats assigned</span></div></div>
+            <label><span>Attendee name</span><input class="name-input" autocomplete="name" placeholder="Real attendee name" /></label>
+            <label><span>bKash number</span><input class="phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="01XXXXXXXXX" /></label>
+          </article>
+          <article class="payment-entry s3" data-payment="2">
+            <div class="payment-title"><b>03</b><div><strong>Payment 3</strong><span class="payment-seats">No seats assigned</span></div></div>
+            <label><span>Attendee name</span><input class="name-input" autocomplete="name" placeholder="Real attendee name" /></label>
+            <label><span>bKash number</span><input class="phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="01XXXXXXXXX" /></label>
+          </article>
+          <article class="payment-entry s4" data-payment="3">
+            <div class="payment-title"><b>04</b><div><strong>Payment 4</strong><span class="payment-seats">No seats assigned</span></div></div>
+            <label><span>Attendee name</span><input class="name-input" autocomplete="name" placeholder="Real attendee name" /></label>
+            <label><span>bKash number</span><input class="phone-input" type="tel" inputmode="numeric" autocomplete="tel" maxlength="14" placeholder="01XXXXXXXXX" /></label>
+          </article>
+        </div>
+        <div id="form-error" class="inline-error" role="alert"></div>
+        <button id="start-button" class="primary-button" type="button" disabled>
+          <span>Verify seats &amp; launch four payments</span><span>&rarr;</span>
+        </button>
+        <p class="fine-print">All four windows must verify their exact seats before any Purchase click is released.</p>
+      </section>
+
+      <section class="progress-panel">
+        <div class="section-head">
+          <div><span class="step">04</span><h2>Live run</h2></div>
+          <span id="run-badge" class="run-badge idle">Ready</span>
+        </div>
+        <div class="run-summary"><div class="radar"><span></span></div><div><strong id="run-phase">Waiting for selection</strong><p id="run-detail">Nothing is booked while you are choosing.</p></div></div>
+        <div id="session-list" class="run-sessions"><div class="run-empty"><b>4</b><span>payment sessions will appear here</span></div></div>
+        <button id="stop-button" class="stop-button" type="button" hidden>Stop run</button>
+      </section>
+    </div>
+
+    <section class="security-note">
+      <div class="lock">&#9679;</div>
+      <div><strong>OTP on this page. PIN only inside bKash.</strong><p>The OTP prompt identifies the full bKash number, attendee, seats, amount and invoice. No number, name, OTP or PIN is saved.</p></div>
+    </section>
+  </main>
+
+  <div id="otp-modal" class="modal-backdrop" hidden>
+    <section class="otp-modal" role="dialog" aria-modal="true" aria-labelledby="otp-title">
+      <button id="otp-close" class="modal-close" type="button" aria-label="Close OTP dialog">&times;</button>
+      <span id="otp-position" class="otp-position">Payment 1 of 4</span>
+      <h2 id="otp-title">bKash OTP</h2>
+      <p>Use the SMS sent to the exact number shown below.</p>
+      <div class="otp-identity"><div><span>Attendee</span><strong id="otp-name">-</strong></div><div><span>bKash number</span><strong id="otp-phone">-</strong></div></div>
+      <div class="otp-order"><div><span>Seats</span><strong id="otp-seats">-</strong></div><div><span>Amount</span><strong id="otp-amount">-</strong></div><div><span>Invoice</span><strong id="otp-invoice">Pending</strong></div></div>
+      <label class="otp-field"><span>Verification code</span><input id="otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Enter OTP" /></label>
+      <div id="otp-error" class="inline-error" role="alert"></div>
+      <button id="otp-submit" class="primary-button" type="button"><span>Submit OTP</span><span>&rarr;</span></button>
+      <p class="pin-reminder">Next, enter the PIN only in the matching secure bKash browser window.</p>
+    </section>
+  </div>
+
+  <script src="/static/picker.js?v=3"></script>
+</body>
+</html>

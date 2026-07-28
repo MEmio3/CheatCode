@@ -121,7 +121,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    uvicorn.run("cinebot.ui.app:app", host="127.0.0.1", port=8765, reload=False)
+    uvicorn.run("cinebot.ui.app_v2:app", host="127.0.0.1", port=8765, reload=False)
 
 
 if __name__ == "__main__":
