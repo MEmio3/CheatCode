@@ -1,4 +1,5 @@
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *.egg-info/
 .eggs/
@@ -19,6 +20,9 @@ secrets/
 # recon captures with personal data
 recon_captures/
 *.har
+*.png
+live_seats.json
+.claude/
 
 # IDE
 .vscode/
