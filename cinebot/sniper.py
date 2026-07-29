@@ -291,6 +291,42 @@ class SniperManager:
             "config": self.config.to_dict() if self.config else None,
         }
 
+    async def test_config(self, cfg: SnipeConfig) -> dict[str, Any]:
+        """Dry-run the watcher against the live schedule WITHOUT firing."""
+        cfg.validate()
+        result: dict[str, Any] = {
+            "match": False, "target_movie": cfg.target_movie,
+            "show_date": cfg.show_date, "location": cfg.location_name, "detail": "",
+        }
+        try:
+            dates = await self.catalog.dates(cfg.location_id)
+        except Exception as exc:
+            result["detail"] = f"Catalog error: {exc}"
+            return result
+        day = next((d for d in dates if str(d.get("date") or "") == cfg.show_date), None)
+        if day is None:
+            result["detail"] = f"{cfg.show_date} is not published at {cfg.location_name} yet."
+            result["published_dates"] = [str(d.get("date")) for d in dates]
+            return result
+        movie = next((m for m in (day.get("movies") or [])
+                       if movie_matches(str(m.get("title") or ""), cfg.target_movie)), None)
+        if movie is None or not int(movie.get("id") or 0):
+            result["detail"] = f"'{cfg.target_movie}' is not listed on {cfg.show_date}."
+            result["available_movies"] = [str(m.get("title")) for m in (day.get("movies") or [])]
+            return result
+        result["movie_id"] = int(movie["id"])
+        result["movie_title"] = str(movie.get("title") or cfg.target_movie)
+        shows = await self.catalog.shows(cfg.location_id, int(movie["id"]), cfg.show_date)
+        chosen = self._pick_show(shows, cfg)
+        if chosen is None:
+            result["detail"] = "Listed, but no preferred hall/time show available."
+            result["shows"] = [{"hall": s.get("hall"), "time": s.get("time_label")} for s in shows]
+            return result
+        result["match"] = True
+        result["show"] = chosen
+        result["detail"] = f"MATCH: {chosen.get('hall')} {chosen.get('time_label')} (program {chosen.get('program_id')})"
+        return result
+
     async def start(self, config: SnipeConfig) -> None:
         if self.busy:
             raise GroupPlanError("The sniper is already running.")
