@@ -588,13 +588,19 @@ class GroupBookingManager:
             for _ in session.chunk.seats:
                 await plus.click()
                 await page.wait_for_timeout(50)
-            await page.wait_for_timeout(600)  # seat map renders after qty is set
+            # The seat map renders asynchronously after the quantity is set.
+            # Clicking into a half-rendered layout selects seats whose booking
+            # data isn't bound yet, which is rejected as "Invalid data". So wait
+            # until every target seat is actually present and visible first.
+            labels = list(session.chunk.labels)
+            await self._dismiss_swal2(page)
+            log.info(f"[Session {session.index}] Waiting for seat map to render {labels}...")
+            for label in labels:
+                await self._wait_for_seat(page, label)
+            await page.wait_for_timeout(250)  # settle so the seat data model binds
 
             # JS-batch seat clicking: click all seats at once via DOM for speed.
-            labels = list(session.chunk.labels)
             log.info(f"[Session {session.index}] Attempting JS batch click for seats: {labels}")
-            await self._dismiss_swal2(page)
-            
             clicked_count = await self._batch_click_seats(page, labels)
             log.info(f"[Session {session.index}] JS batch clicked {clicked_count}/{len(labels)} seats.")
             
@@ -611,7 +617,7 @@ class GroupBookingManager:
                     seat = await self._wait_for_seat(page, label)
                     await seat.click(timeout=5_000)
                     log.info(f"[Session {session.index}] Clicked {label} sequentially.")
-                    await page.wait_for_timeout(200)
+                    await page.wait_for_timeout(50)
 
             # Final verification
             selected_text = await page.locator(".selected_seat").inner_text(timeout=5_000)
@@ -653,33 +659,60 @@ class GroupBookingManager:
             self._set_session(session, "booking", "Waiting for booking slot...")
             log.info(f"[Session {session.index}] Gate released; queuing for serial booking...")
             assert self._booking_lock is not None
+            max_attempts = 3
+            booking_payload: dict = {}
             async with self._booking_lock:
-                self._set_session(session, "booking", "Creating the Cineplex booking...")
-                log.info(f"[Session {session.index}] Booking slot acquired. Clicking Purchase...")
-                async with page.expect_response(
-                    lambda response: re.search(r"/api/v1/booking$", response.url) is not None,
-                    timeout=30_000,
-                ) as booking_response_info:
-                    await purchase.click()
-                booking_response = await booking_response_info.value
-                try:
-                    booking_payload = await booking_response.json()
-                except Exception:
-                    booking_payload = {}
-                try:
-                    post_data = booking_response.request.post_data
-                except Exception:
-                    post_data = None
-                log.info(
-                    f"[Session {session.index}] /booking -> HTTP {booking_response.status}; "
-                    f"code={booking_payload.get('code')}; sent={post_data}"
-                )
+                for attempt in range(1, max_attempts + 1):
+                    self._set_session(session, "booking", "Creating the Cineplex booking...")
+                    log.info(
+                        f"[Session {session.index}] Booking slot acquired. "
+                        f"Clicking Purchase (attempt {attempt}/{max_attempts})..."
+                    )
+                    async with page.expect_response(
+                        lambda response: re.search(r"/api/v1/booking$", response.url) is not None,
+                        timeout=30_000,
+                    ) as booking_response_info:
+                        await purchase.click()
+                    booking_response = await booking_response_info.value
+                    try:
+                        booking_payload = await booking_response.json()
+                    except Exception:
+                        booking_payload = {}
+                    try:
+                        post_data = booking_response.request.post_data
+                    except Exception:
+                        post_data = None
+                    log.info(
+                        f"[Session {session.index}] /booking -> HTTP {booking_response.status}; "
+                        f"code={booking_payload.get('code')}; sent={post_data}"
+                    )
+                    if booking_payload.get("code") == 200:
+                        break
+                    # Rejected (e.g. the "seat already booked" modal). Click the
+                    # modal's OK button to dismiss it, then click Purchase again
+                    # with the same seats. In an empty hall this rejection is
+                    # usually transient and clears on retry.
+                    messages = booking_payload.get("message") or ["Booking rejected"]
+                    log.warning(
+                        f"[Session {session.index}] Booking rejected on attempt {attempt}: "
+                        f"{messages[0]}"
+                    )
+                    if attempt < max_attempts:
+                        await self._dismiss_swal2(page)
+                        await page.wait_for_timeout(800)
+                        try:
+                            await self._wait_enabled(purchase, timeout_ms=10_000)
+                        except Exception:
+                            pass
                 # Let the backend fully commit this hold before the next
                 # session's booking POST begins.
                 await page.wait_for_timeout(600)
             if booking_payload.get("code") != 200:
                 messages = booking_payload.get("message") or ["Booking rejected"]
-                log.error(f"[Session {session.index}] Booking rejected: {messages[0]}")
+                log.error(
+                    f"[Session {session.index}] Booking rejected after {max_attempts} attempts: "
+                    f"{messages[0]}"
+                )
                 raise GroupPlanError(str(messages[0]))
 
             log.info(f"[Session {session.index}] Booking created. Proceeding to payment gateway...")
@@ -790,35 +823,45 @@ class GroupBookingManager:
                 self._ready_event.set()
 
     async def _batch_click_seats(self, page, labels: list[str]) -> int:
-        """Click all target seats in one JS evaluate call for speed."""
+        """Click every target seat in one JS evaluate call for speed.
+
+        The live Cineplex seat cells are NOT <a>/<button>; they are generic
+        elements whose exact trimmed text is the seat label (e.g. "D5"). So
+        match by exact text across every element, pick the tightest match
+        (fewest descendants = the seat cell, not a container), and fire a full
+        mousedown/mouseup/click sequence so the SPA's real handler runs.
+        """
         try:
-            result = await page.evaluate(
+            clicked = await page.evaluate(
                 """(labels) => {
-                    let clicked = 0;
-                    for (const label of labels) {
-                        // Try data-seat attribute first (fastest)
-                        let el = document.querySelector(`[data-seat="${label}"]`);
-                        if (!el) {
-                            // Fallback: find anchor/button whose exact text matches
-                            const all = document.querySelectorAll('a, button');
-                            for (const node of all) {
-                                if (node.textContent.trim() === label) {
-                                    el = node;
-                                    break;
-                                }
-                            }
-                        }
-                        if (el) {
-                            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                            clicked++;
+                    const want = new Set(labels);
+                    const best = {};
+                    for (const el of document.querySelectorAll('*')) {
+                        const txt = (el.textContent || '').trim();
+                        if (!want.has(txt)) continue;
+                        const depth = el.querySelectorAll('*').length;
+                        if (best[txt] === undefined || depth < best[txt].depth) {
+                            best[txt] = { el, depth };
                         }
                     }
-                    return clicked;
+                    const done = [];
+                    for (const label of labels) {
+                        const hit = best[label];
+                        if (!hit) continue;
+                        const el = hit.el;
+                        try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+                        const opts = { bubbles: true, cancelable: true, view: window };
+                        el.dispatchEvent(new MouseEvent('mousedown', opts));
+                        el.dispatchEvent(new MouseEvent('mouseup', opts));
+                        el.dispatchEvent(new MouseEvent('click', opts));
+                        done.push(label);
+                    }
+                    return done;
                 }""",
                 labels,
             )
-            await page.wait_for_timeout(300)
-            return int(result) if str(result).isdigit() else (len(labels) if result is True else 0)
+            await page.wait_for_timeout(250)
+            return len(clicked) if isinstance(clicked, list) else 0
         except Exception as exc:
             log.warning("JS batch seat click failed, using fallback: %s", exc)
             return 0
@@ -911,19 +954,22 @@ class GroupBookingManager:
             pass
 
     async def _wait_for_seat(self, page, label: str):
-        """Find a rendered seat despite Cineplex changing its seat DOM shape."""
-        # Fast path first: the exact-text match is the most reliable on the
-        # current DOM, so try it first with a generous timeout. The attribute
-        # and anchor selectors are fallbacks with short timeouts.
-        candidates = (
-            (page.get_by_text(label, exact=True).first, 5_000),
-            (page.locator(f'[data-seat="{label}"]').first, 400),
-            (page.locator(f'a:has-text("{label}")').first, 400),
+        """Find a rendered seat despite Cineplex changing its seat DOM shape.
+
+        Order matters: the live site exposes seats as elements whose exact text
+        is the label, so try that first with a short timeout. The old
+        data-seat-first order burned 5s per seat waiting on a selector that
+        never exists on this site.
+        """
+        selectors = (
+            page.get_by_text(label, exact=True).first,
+            page.locator(f'a:has-text("{label}")').first,
+            page.locator(f'[data-seat="{label}"]').first,
         )
         last_error: Exception | None = None
         for locator, timeout in candidates:
             try:
-                await locator.wait_for(state="visible", timeout=timeout)
+                await locator.wait_for(state="visible", timeout=1_500)
                 return locator
             except Exception as exc:
                 last_error = exc
