@@ -230,6 +230,14 @@ select:disabled { color: #62576b; cursor: not-allowed; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
 }
 
+.sniper-card { margin-top: 16px; }
+.snipe-payments { margin: 16px 0; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: rgba(156,69,223,.05); }
+.snipe-payments-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.snipe-payments-head strong { font-size: 13px; }
+#snipe-attendees { margin-top: 10px; }
+.payments-count { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.payments-count input { width: 52px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+
 .sniper-card {
   background: linear-gradient(180deg, rgba(156,69,223,.10), var(--panel));
   border: 1px solid var(--line);

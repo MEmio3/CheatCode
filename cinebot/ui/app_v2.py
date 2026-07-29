@@ -312,6 +312,16 @@ def snipe_state(request: Request):
     return _sniper(request).snapshot()
 
 
+@app.post("/api/snipe/test")
+async def snipe_test(body: SnipeConfigIn, request: Request):
+    """Dry-run the sniper against the live schedule without booking."""
+    try:
+        cfg = _to_snipe_config(body)
+        return await _sniper(request).test_config(cfg)
+    except GroupPlanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 def main() -> None:
     import uvicorn
 

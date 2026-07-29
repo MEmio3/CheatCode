@@ -366,14 +366,15 @@ function paintSeatAssignments() {
 }
 
 function updateAssignments() {
+  const max = Math.max(assignments.length, document.querySelectorAll(".session-tab").length, document.querySelectorAll(".payment-entry").length);
   const total = assignments.reduce((sum, seats) => sum + seats.length, 0);
   $("seat-count").textContent = total;
   document.querySelectorAll(".session-tab").forEach((tab, index) => {
-    tab.querySelector("b").textContent = `${assignments[index].length}/10`;
+    tab.querySelector("b").textContent = `${(assignments[index] || []).length}/10`;
   });
   document.querySelectorAll(".payment-entry").forEach((entry, index) => {
-    entry.querySelector(".payment-seats").textContent = assignments[index].length
-      ? assignments[index].join(", ")
+    entry.querySelector(".payment-seats").textContent = (assignments[index] || []).length
+      ? (assignments[index] || []).join(", ")
       : "No seats assigned";
   });
   updateStartButton();
@@ -423,6 +424,14 @@ function updateStartButton() {
   $("start-button").disabled = !selectedShow || !selectedClass || !assigned || Boolean(runState?.busy);
 }
 
+let orderPopup = null;
+function openOrderPopup() {
+  try {
+    if (orderPopup && !orderPopup.closed) { orderPopup.focus(); return; }
+    orderPopup = window.open("/payment-status", "cinebot-order", "width=540,height=760");
+  } catch { orderPopup = null; }
+}
+
 async function startRun() {
   $("form-error").textContent = "";
   let body;
@@ -440,6 +449,7 @@ async function startRun() {
       body: JSON.stringify(body),
     });
     $("stop-button").hidden = false;
+    openOrderPopup();
     lockPicker(true);
     await refreshState();
     beginPolling();
@@ -517,6 +527,7 @@ function renderRunState() {
 }
 
 function sessionStatus(session) {
+  if (session.status === "manual_otp") return "Enter OTP + PIN";
   if (session.status === "waiting_otp") return "OTP needed";
   if (session.status === "pin_required") return "PIN in bKash";
   if (session.status === "completed") return "Confirmed";
@@ -620,16 +631,57 @@ function readAttendees() {
   return attendees;
 }
 
+function snipePayCount() {
+  return Math.max(1, Math.min(8, Number($("snipe-pay-count")?.value) || 4));
+}
+function clampSnipePayCount() {
+  const el = $("snipe-pay-count");
+  if (!el) return;
+  const mn = Math.max(1, Math.min(8, Math.ceil((Number($("snipe-total")?.value) || 36) / 10)));
+  el.min = String(mn);
+  if (snipePayCount() < mn) el.value = String(mn);
+}
+function renderSnipeAttendees(count) {
+  const root = $("snipe-attendees");
+  if (!root) return;
+  const prev = [...root.querySelectorAll(".payment-entry")].map(e => ({
+    name: e.querySelector(".name-input")?.value || "",
+    phone: e.querySelector(".phone-input")?.value || "",
+  }));
+  root.innerHTML = "";
+  for (let i = 0; i < count; i++) {
+    const a = document.createElement("article");
+    a.className = `payment-entry s${(i % 8) + 1}`;
+    const p = prev[i] || {};
+    a.innerHTML = `<div class="payment-title"><b>${String(i+1).padStart(2,"0")}</b><div><strong>Sniper payment ${i+1}</strong></div></div>
+      <label><span>Attendee name</span><input class="name-input" placeholder="Attendee name" value="${escapeHtml(p.name)}"></label>
+      <label><span>bKash number</span><input class="phone-input" type="tel" inputmode="numeric" maxlength="14" placeholder="01XXXXXXXXX" value="${escapeHtml(p.phone)}"></label>`;
+    root.appendChild(a);
+  }
+}
+function readSnipeAttendees() {
+  const entries = [...document.querySelectorAll("#snipe-attendees .payment-entry")];
+  if (!entries.length) throw new Error("Add at least one sniper payment method.");
+  const attendees = entries.map(e => ({
+    name: e.querySelector(".name-input").value.replace(/\s+/g, " ").trim(),
+    bkash: normalizePhone(e.querySelector(".phone-input").value),
+  }));
+  if (attendees.some(a => !a.name)) throw new Error("Fill every sniper attendee name.");
+  if (attendees.some(a => !/^01[3-9]\d{8}$/.test(a.bkash))) throw new Error("Enter valid bKash numbers.");
+  if (new Set(attendees.map(a => a.bkash)).size !== attendees.length) throw new Error("Use a different bKash per sniper attendee.");
+  return attendees;
+}
+
 function buildSnipeConfig() {
   const sl = $("snipe-location");
   const slOpt = sl && sl.options[sl.selectedIndex];
   if (!slOpt || !slOpt.value) throw new Error("Pick a sniper location.");
   if (!$("snipe-movie").value.trim()) throw new Error("Enter the movie title to watch for.");
   if (!$("snipe-date").value.trim()) throw new Error("Choose the required show date.");
-  if (paymentCount() < minPayments()) {
+  if (snipePayCount() < minPayments()) {
     throw new Error(`Need at least ${minPayments()} payment(s) for ${$("snipe-total").value} seats (10 per payment).`);
   }
-  const attendees = readAttendees();
+  const attendees = readSnipeAttendees();
   const rows = $("snipe-rows").value.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
   const hallText = $("snipe-halls").value.trim();
   const hallIds = hallText ? hallText.split(",").map((value) => Number(value.trim())) : [];
@@ -643,14 +695,14 @@ function buildSnipeConfig() {
     location_name: slOpt.textContent,
     hall_ids: hallIds,
     show_date: $("snipe-date").value.trim(),
-    time_start: $("snipe-start").value.trim(),
+    time_start: $("snipe-time-start").value.trim(),
     time_end: $("snipe-end").value.trim(),
     poll_seconds: Number($("snipe-poll").value) || 75,
     total_seats: Number($("snipe-total").value) || 1,
     primary_rows: rows,
     fill_row: $("snipe-fill").value.trim().toUpperCase(),
     trim_last: 0,
-    num_payments: paymentCount(),
+    num_payments: snipePayCount(),
     allow_duplicate_identity: $("allow-duplicate-identity").checked,
     attendees,
   };
@@ -665,17 +717,18 @@ async function loadSnipeConfig() {
     const sl = $("snipe-location");
     if (sl && cfg.location_id) savedSnipeLocationId = String(cfg.location_id);
     $("snipe-halls").value = (cfg.hall_ids || []).join(",");
-    $("snipe-start").value = cfg.time_start;
+    $("snipe-time-start").value = cfg.time_start;
     $("snipe-end").value = cfg.time_end;
     $("snipe-total").value = cfg.total_seats;
-    $("payment-count").value = String(cfg.num_payments || 1);
-    clampPaymentCount();
+    clampSnipePayCount();
+    $("snipe-pay-count").value = String(cfg.num_payments || 1);
+    clampSnipePayCount();
     $("snipe-rows").value = (cfg.primary_rows || []).join(",");
     $("snipe-fill").value = cfg.fill_row || "";
     $("snipe-poll").value = cfg.poll_seconds;
-    applyPaymentCount();
+    renderSnipeAttendees(snipePayCount());
     (cfg.attendees || []).forEach((att, i) => {
-      const e = document.querySelectorAll(".payment-entry")[i];
+      const e = document.querySelectorAll("#snipe-attendees .payment-entry")[i];
       if (!e) return;
       if (att.name) e.querySelector(".name-input").value = att.name;
       if (att.bkash) e.querySelector(".phone-input").value = att.bkash;
@@ -718,6 +771,15 @@ async function saveTelegramConfig() {
   } catch (error) {
     setSnipeStatus(error.message, "error");
   }
+}
+
+async function snipeTest() {
+  try {
+    const cfg = buildSnipeConfig();
+    setSnipeStatus("Testing the live schedule...", "loading");
+    const res = await api("/api/snipe/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfg) });
+    setSnipeStatus((res.match ? "MATCH — " : "No match — ") + res.detail, res.match ? "ready" : "loading");
+  } catch (error) { setSnipeStatus(error.message, "error"); }
 }
 
 async function snipeSave() {
@@ -809,16 +871,20 @@ $("otp-code").addEventListener("keydown", (event) => {
     submitOtp();
   }
 });
-$("snipe-total").addEventListener("input", () => { clampPaymentCount(); applyPaymentCount(); });
+$("snipe-total").addEventListener("input", () => { clampPaymentCount(); applyPaymentCount(); clampSnipePayCount(); renderSnipeAttendees(snipePayCount()); });
 $("payment-count").addEventListener("input", () => { clampPaymentCount(); applyPaymentCount(); });
+$("snipe-pay-count").addEventListener("input", () => { clampSnipePayCount(); renderSnipeAttendees(snipePayCount()); });
 $("snipe-save").addEventListener("click", snipeSave);
 $("telegram-save").addEventListener("click", saveTelegramConfig);
 $("snipe-start").addEventListener("click", snipeStart);
 $("snipe-stop").addEventListener("click", snipeStop);
+$("snipe-test").addEventListener("click", snipeTest);
 
 Promise.all([api("/api/group/config"), refreshState(), api("/api/snipe/state")]).then(([loadedConfig, , snipe]) => {
   config = loadedConfig;
   applyPaymentCount();
+  clampSnipePayCount();
+  renderSnipeAttendees(snipePayCount());
   if (runState?.busy) beginPolling();
   loadSnipeConfig();
   loadTelegramConfig();
