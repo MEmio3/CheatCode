@@ -138,10 +138,9 @@ class CatalogManager:
         from playwright.async_api import async_playwright
 
         last_error: Exception | None = None
-        # Headless keeps catalog loading unobtrusive. If reCAPTCHA declines that
-        # session, retry once with a normal Chrome window so the public flow can
-        # complete naturally.
-        for headless in (True, False):
+        # Go straight to headed Chrome — headless is rejected by reCAPTCHA v3
+        # (wastes 30s failing before the fallback). Headed takes ~10s and works.
+        for headless in (False,):
             try:
                 async with async_playwright() as pw:
                     try:
