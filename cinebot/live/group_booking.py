@@ -182,6 +182,7 @@ class GroupBookingManager:
         self.started_at: Optional[float] = None
         self._task: Optional[asyncio.Task] = None
         self._browser = None
+        self._contexts: list = []
         self._ready_event: asyncio.Event | None = None
         self._ready_lock: asyncio.Lock | None = None
         self._ready_count = 0
@@ -189,6 +190,11 @@ class GroupBookingManager:
         self._gate_error: Optional[str] = None
         self._purchases_released = False
         self._park_event: Optional[asyncio.Event] = None
+        # Serializes the /booking POST across sessions: Cineplex rejects
+        # overlapping booking calls from the same IP with a bogus "already
+        # booked" message, so exactly one may be in flight at a time.
+        self._booking_lock: asyncio.Lock | None = None
+        self.browser_open = False
 
     @property
     def busy(self) -> bool:
@@ -207,6 +213,7 @@ class GroupBookingManager:
                 for item in sorted(self.sessions.values(), key=lambda value: value.index)
             ],
             "started_at": self.started_at,
+            "browser_open": self.browser_open,
         }
 
     async def start(
@@ -237,6 +244,7 @@ class GroupBookingManager:
         self._gate_error = None
         self._purchases_released = False
         self._park_event = asyncio.Event()
+        self._booking_lock = asyncio.Lock()
         run_id = f"group_{uuid.uuid4().hex[:10]}"
         self._task = asyncio.create_task(self._run(run_id, target, payments), name=run_id)
         return run_id
@@ -253,6 +261,26 @@ class GroupBookingManager:
         except asyncio.CancelledError:
             pass
         return True
+
+    async def close_browser(self) -> bool:
+        """Manually close all browser windows. Called from the UI."""
+        closed = False
+        for ctx in list(self._contexts):
+            try:
+                await ctx.close()
+                closed = True
+            except Exception:
+                pass
+        self._contexts.clear()
+        if self._browser is not None:
+            try:
+                await self._browser.close()
+                closed = True
+            except Exception:
+                pass
+            self._browser = None
+        self.browser_open = False
+        return closed
 
     def submit_otp(self, session_id: str, code: str) -> None:
         session = self.sessions.get(session_id)
@@ -280,6 +308,7 @@ class GroupBookingManager:
                     self._browser = await pw.chromium.launch(channel="chrome", headless=False)
                 except Exception:
                     self._browser = await pw.chromium.launch(headless=False)
+                self.browser_open = True
                 target, chunks = await self._verify_target_and_seats(
                     self._browser, target, payments
                 )
@@ -363,6 +392,8 @@ class GroupBookingManager:
             self.detail = str(exc)
             self.error = str(exc)
         finally:
+            # Browser windows stay open so the user can complete manual payments.
+            # Call close_browser() from the UI when done.
             self._task = None
 
     async def _verify_target_and_seats(
@@ -510,6 +541,7 @@ class GroupBookingManager:
         context = await browser.new_context(
             user_agent=_UA, viewport={"width": 1320, "height": 900}
         )
+        self._contexts.append(context)
         page = await context.new_page()
         try:
             await self._show_window_label(page, session, "Opening")
@@ -518,7 +550,7 @@ class GroupBookingManager:
                 self._set_session(
                     session,
                     "queued",
-                    f"Launch position {session.index}; opening in {stagger} seconds.",
+                    f"Launch position {session.index}; opening in {stagger:.0f}s.",
                 )
                 await asyncio.sleep(stagger)
             self._set_session(session, "opening", "Opening a private session...")
@@ -550,28 +582,49 @@ class GroupBookingManager:
             await type_choice.wait_for(state="visible", timeout=10_000)
             await type_choice.click()
 
+            log.info(f"[Session {session.index}] Setting quantity to {len(session.chunk.seats)}...")
             plus = page.locator(".ticket_qty_view div:nth-child(3) img").first
             await plus.wait_for(state="visible", timeout=10_000)
             for _ in session.chunk.seats:
                 await plus.click()
-                await page.wait_for_timeout(200)
-            await page.wait_for_timeout(800)  # seat map renders after qty is set
+                await page.wait_for_timeout(50)
+            await page.wait_for_timeout(600)  # seat map renders after qty is set
 
-            for label in session.chunk.labels:
-                # a SweetAlert2 popup ("Do you want to allow...") can intercept the
-                # first seat click and silently drop it; dismiss before every click.
-                await self._dismiss_swal2(page)
-                seat = await self._wait_for_seat(page, label)
-                await seat.click(timeout=5_000)
-
+            # JS-batch seat clicking: click all seats at once via DOM for speed.
+            labels = list(session.chunk.labels)
+            log.info(f"[Session {session.index}] Attempting JS batch click for seats: {labels}")
+            await self._dismiss_swal2(page)
+            
+            clicked_count = await self._batch_click_seats(page, labels)
+            log.info(f"[Session {session.index}] JS batch clicked {clicked_count}/{len(labels)} seats.")
+            
+            # Verify and fallback to click ONLY missing seats
+            await page.wait_for_timeout(500)
             selected_text = await page.locator(".selected_seat").inner_text(timeout=5_000)
             accepted = set(re.findall(r"\b[A-Z]{1,3}\d+\b", selected_text.upper()))
-            missing = [label for label in session.chunk.labels if label not in accepted]
+            missing = [label for label in labels if label not in accepted]
+            
             if missing:
-                raise GroupPlanError(
-                    "Cineplex did not accept assigned seats: " + ", ".join(missing)
-                )
+                log.warning(f"[Session {session.index}] JS batch missed seats: {missing}. Falling back to sequential clicks for missing seats.")
+                for label in missing:
+                    await self._dismiss_swal2(page)
+                    seat = await self._wait_for_seat(page, label)
+                    await seat.click(timeout=5_000)
+                    log.info(f"[Session {session.index}] Clicked {label} sequentially.")
+                    await page.wait_for_timeout(200)
 
+            # Final verification
+            selected_text = await page.locator(".selected_seat").inner_text(timeout=5_000)
+            accepted = set(re.findall(r"\b[A-Z]{1,3}\d+\b", selected_text.upper()))
+            missing = [label for label in labels if label not in accepted]
+            if missing:
+                err_msg = "Cineplex did not accept assigned seats: " + ", ".join(missing)
+                log.error(f"[Session {session.index}] {err_msg}")
+                raise GroupPlanError(err_msg)
+            
+            log.info(f"[Session {session.index}] Seats successfully selected: {accepted}")
+
+            log.info(f"[Session {session.index}] Filling attendee details...")
             await page.fill("input[name=customer_name]", session.name)
             await page.fill("input[name=msisdn]", session.phone)
             await page.fill("input[name=msisdn_confirm]", session.phone)
@@ -588,36 +641,48 @@ class GroupBookingManager:
 
             purchase = page.locator("button.btn-desktop-purchase").first
             await self._wait_enabled(purchase, timeout_ms=30_000)
+            log.info(f"[Session {session.index}] Waiting for group release gate...")
             await self._wait_for_group_release(session)
-            self._set_session(session, "booking", "Creating the Cineplex booking...")
-            # Stagger the purchase click across sessions to avoid a booking
-            # collision on the server.
-            if session.index > 1:
-                await asyncio.sleep((session.index - 1) * 1.5)
-            booking_payload: dict = {}
-            for attempt in range(3):
+
+            # The Purchase click is what actually holds+books the seats on the
+            # server (seat clicks never touch it). Cineplex's guest backend
+            # rejects two /booking POSTs that overlap in time from the same IP
+            # with a bogus "already booked by another user" message — even in an
+            # empty hall. So serialize: exactly one booking POST is in flight at
+            # a time. Nobody is sniping, so waiting our turn is free.
+            self._set_session(session, "booking", "Waiting for booking slot...")
+            log.info(f"[Session {session.index}] Gate released; queuing for serial booking...")
+            assert self._booking_lock is not None
+            async with self._booking_lock:
+                self._set_session(session, "booking", "Creating the Cineplex booking...")
+                log.info(f"[Session {session.index}] Booking slot acquired. Clicking Purchase...")
                 async with page.expect_response(
                     lambda response: re.search(r"/api/v1/booking$", response.url) is not None,
                     timeout=30_000,
                 ) as booking_response_info:
                     await purchase.click()
-                booking_payload = await (await booking_response_info.value).json()
-                if booking_payload.get("code") != 200:
-                    messages = booking_payload.get("message") or ["Booking rejected"]
-                    message_text = str(messages).lower()
-                    if (
-                        "already" in message_text
-                        and "booked" in message_text
-                        and attempt < 2
-                    ):
-                        # A prior attempt may have actually succeeded; dismiss
-                        # the "Proceed" popup and retry.
-                        await self._dismiss_swal2(page)
-                        await page.wait_for_timeout(2500)
-                        continue
-                    raise GroupPlanError(str(messages[0]))
-                break
+                booking_response = await booking_response_info.value
+                try:
+                    booking_payload = await booking_response.json()
+                except Exception:
+                    booking_payload = {}
+                try:
+                    post_data = booking_response.request.post_data
+                except Exception:
+                    post_data = None
+                log.info(
+                    f"[Session {session.index}] /booking -> HTTP {booking_response.status}; "
+                    f"code={booking_payload.get('code')}; sent={post_data}"
+                )
+                # Let the backend fully commit this hold before the next
+                # session's booking POST begins.
+                await page.wait_for_timeout(600)
+            if booking_payload.get("code") != 200:
+                messages = booking_payload.get("message") or ["Booking rejected"]
+                log.error(f"[Session {session.index}] Booking rejected: {messages[0]}")
+                raise GroupPlanError(str(messages[0]))
 
+            log.info(f"[Session {session.index}] Booking created. Proceeding to payment gateway...")
             self._set_session(session, "gateway", "Opening secure bKash payment...")
             mobile = page.get_by_text(
                 re.compile(r"MOBILE BANKING", re.I), exact=False
@@ -636,6 +701,7 @@ class GroupBookingManager:
                     timeout=5_000
                 )
 
+            log.info(f"[Session {session.index}] Filling wallet number: {session.phone}")
             wallet = page.locator(
                 'input[name="WALLET"], input[name*="WALLET"], '
                 'input[placeholder*="01X"], input[type="tel"]'
@@ -650,6 +716,7 @@ class GroupBookingManager:
                 "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
                 "a:has-text('Confirm')"
             ).last
+            log.info(f"[Session {session.index}] Clicking bKash Confirm button...")
             await confirm.click(timeout=8_000)
 
             otp_input = page.locator(
@@ -722,9 +789,66 @@ class GroupBookingManager:
                 self._purchases_released = True
                 self._ready_event.set()
 
+    async def _batch_click_seats(self, page, labels: list[str]) -> int:
+        """Click all target seats in one JS evaluate call for speed."""
+        try:
+            result = await page.evaluate(
+                """(labels) => {
+                    let clicked = 0;
+                    for (const label of labels) {
+                        // Try data-seat attribute first (fastest)
+                        let el = document.querySelector(`[data-seat="${label}"]`);
+                        if (!el) {
+                            // Fallback: find anchor/button whose exact text matches
+                            const all = document.querySelectorAll('a, button');
+                            for (const node of all) {
+                                if (node.textContent.trim() === label) {
+                                    el = node;
+                                    break;
+                                }
+                            }
+                        }
+                        if (el) {
+                            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                            clicked++;
+                        }
+                    }
+                    return clicked;
+                }""",
+                labels,
+            )
+            await page.wait_for_timeout(300)
+            return int(result) if str(result).isdigit() else (len(labels) if result is True else 0)
+        except Exception as exc:
+            log.warning("JS batch seat click failed, using fallback: %s", exc)
+            return 0
+
+    async def _dismiss_swal2(self, page) -> None:
+        """Dismiss SweetAlert2 popups that intercept pointer events."""
+        try:
+            if await page.evaluate("document.querySelector('.swal2-confirm') !== null"):
+                btn = page.locator(".swal2-confirm").first
+                if await btn.is_visible(timeout=200):
+                    await btn.click(timeout=1500)
+        except Exception:
+            pass
+
     async def _wait_for_payment_result(
         self, page, session: PaymentSession, timeout_seconds: int = 600
     ) -> None:
+        _FAIL_PATTERNS = (
+            "payment failed",
+            "transaction failed",
+            "insufficient balance",
+            "insufficient fund",
+            "transaction limit",
+            "session expired",
+            "payment cancelled",
+            "payment canceled",
+            "could not process",
+            "try again later",
+            "something went wrong",
+        )
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             if page.is_closed():
@@ -743,24 +867,13 @@ class GroupBookingManager:
                 session.pin_required = False
                 self._set_session(session, "completed", "Payment confirmed.")
                 return
-            failure_keywords = (
-                ("insufficient", "Insufficient bKash balance"),
-                ("declined", "bKash declined the payment"),
-                ("unsuccessful", "bKash reported the payment was unsuccessful"),
-                ("could not complete", "bKash could not complete the payment"),
-                ("could not be completed", "bKash could not complete the payment"),
-                ("payment canceled", "The bKash payment was cancelled"),
-                ("payment cancelled", "The bKash payment was cancelled"),
-                ("payment failed", "bKash reported that the payment failed"),
-                ("transaction failed", "bKash reported that the payment failed"),
-            )
-            failure_reason = next(
-                (reason for keyword, reason in failure_keywords if keyword in text),
-                None,
-            )
-            if failure_reason is not None:
-                raise GroupPlanError(failure_reason)
-            await page.wait_for_timeout(1_000)
+# Immediate failure detection
+            for pattern in _FAIL_PATTERNS:
+                if pattern in text:
+                    raise GroupPlanError(f"bKash payment failed: {pattern}")
+            if "fail" in url or "cancel" in url or "error" in url:
+                raise GroupPlanError("Payment gateway returned a failure redirect.")
+            await page.wait_for_timeout(1_500)
         # On timeout, do NOT raise — leave the session in manual_otp so the
         # user can still finish the OTP + PIN entry by hand.
         return
@@ -842,9 +955,9 @@ class GroupBookingManager:
     def _set_session(self, session: PaymentSession, status: str, detail: str) -> None:
         session.status = status
         session.detail = detail
-        if status not in {"waiting_otp", "submitting_otp"}:
+        if status not in {"waiting_otp", "submitting_otp", "manual_payment"}:
             session.otp_required = False
-        if status != "pin_required":
+        if status not in {"pin_required", "manual_payment"}:
             session.pin_required = False
 
     def _fail_session(self, session: PaymentSession, detail: str) -> None:

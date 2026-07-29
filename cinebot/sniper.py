@@ -447,7 +447,22 @@ class SniperManager:
             f"DETECTED {chosen.get('movie_title')} — {chosen.get('hall')} "
             f"{chosen.get('time_label')}. Resolving {cfg.total_seats} seats."
         )
-        await self._report(cfg, self.detail, force=True)
+        match_msg = (
+            f"🎯 MATCH FOUND — BOOKING NOW\n"
+            f"Movie: {chosen.get('movie_title')}\n"
+            f"Hall: {chosen.get('hall')} | Time: {chosen.get('time_label')}\n"
+            f"Date: {cfg.show_date} | Location: {cfg.location_name}\n"
+            f"Seats: {cfg.total_seats} across {cfg.num_payments} payment(s)"
+        )
+        await self._report(cfg, match_msg, force=True)
+        # Validate show structure before attempting booking
+        required = ("program_id", "screen_id", "time")
+        missing_fields = [f for f in required if not chosen.get(f)]
+        if missing_fields:
+            self.status = "error"
+            self.detail = f"Show data incomplete (missing {', '.join(missing_fields)}). Cannot book."
+            await self._report(cfg, self.detail, force=True)
+            return
         target, payments = await self._build_payload(chosen, cfg, int(movie["id"]))
         try:
             await self.group.start(

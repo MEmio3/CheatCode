@@ -30,6 +30,7 @@ const STATUS_LABELS = {
   completed: "Complete",
   error: "Error",
   stopped: "Stopped",
+  manual_payment: "Manual",
 };
 
 function escapeHtml(value) {
@@ -511,18 +512,23 @@ function renderRunState() {
         <em>${escapeHtml(sessionStatus(session))}</em>
       </article>`).join("");
   }
-  const waiting = sessions.filter((session) => session.otp_required);
+  const waiting = sessions.filter((session) => session.otp_required && session.status !== "manual_payment");
   if (waiting.length && !activeOtpSessionId) {
     openOtp(waiting[0].id);
   } else if (activeOtpSessionId) {
     const active = sessions.find((session) => session.id === activeOtpSessionId);
-    if (!active || !active.otp_required) {
+    if (!active || !active.otp_required || active.status === "manual_payment") {
       closeOtp();
       const next = waiting[0];
       if (next) openOtp(next.id);
     } else {
       fillOtpModal(active);
     }
+  }
+  // Show/hide close browser button
+  const closeBrowserBtn = $("close-browser-button");
+  if (closeBrowserBtn) {
+    closeBrowserBtn.hidden = !runState.browser_open;
   }
 }
 
@@ -596,6 +602,16 @@ async function stopRun() {
     $("stop-button").disabled = false;
     lockPicker(false);
     closeOtp();
+  }
+}
+
+async function closeBrowser() {
+  const btn = $("close-browser-button");
+  if (btn) btn.disabled = true;
+  try {
+    await api("/api/group/close-browser", { method: "POST" });
+  } finally {
+    if (btn) { btn.disabled = false; btn.hidden = true; }
   }
 }
 
@@ -863,6 +879,7 @@ selects.seatClass.addEventListener("change", onClassChange);
 $("reload-catalog").addEventListener("click", loadLocations);
 $("start-button").addEventListener("click", startRun);
 $("stop-button").addEventListener("click", stopRun);
+if ($("close-browser-button")) $("close-browser-button").addEventListener("click", closeBrowser);
 $("otp-submit").addEventListener("click", submitOtp);
 $("otp-close").addEventListener("click", closeOtp);
 $("otp-code").addEventListener("keydown", (event) => {

@@ -1,9 +1,56 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment order</title>
-<style>body{font:16px system-ui;background:#100b16;color:#f5eafa;margin:32px;max-width:720px}article{display:flex;gap:18px;align-items:center;padding:16px;margin:10px 0;border:1px solid #493653;border-radius:12px}b{font-size:28px;color:#f2b3ff}small{display:block;color:#cdbbd2;margin-top:4px}.muted{color:#cdbbd2}</style></head>
-<body><h1>Payment launch order</h1><p class="muted">Sessions open five seconds apart. Use the number below to match each browser window and OTP.</p><div id="sessions" class="muted">Waiting for a run...</div>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment Status</title>
+<style>
+body{font:15px/1.5 system-ui;background:#100b16;color:#f5eafa;margin:24px;max-width:800px}
+h1{font-size:22px;margin:0 0 4px}
+.muted{color:#cdbbd2;font-size:13px;margin:0 0 18px}
+article{display:flex;gap:16px;align-items:flex-start;padding:14px 16px;margin:8px 0;border:1px solid #493653;border-radius:12px;transition:border-color .3s}
+article.completed{border-color:#3ddc84}article.failed{border-color:#ff5252}
+article.manual_payment{border-color:#f0c040}article.gateway,article.booking{border-color:#7c4dff}
+b.idx{font-size:26px;min-width:36px;text-align:center}
+b.idx{color:#f2b3ff}
+.completed b.idx{color:#3ddc84}.failed b.idx{color:#ff5252}.manual_payment b.idx{color:#f0c040}
+.info{flex:1}
+.info strong{display:block;font-size:14px}
+.info small{display:block;color:#cdbbd2;margin-top:3px;font-size:13px}
+.badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;text-transform:uppercase;margin-top:4px}
+.badge.completed{background:#3ddc8422;color:#3ddc84}.badge.failed{background:#ff525222;color:#ff5252}
+.badge.manual_payment{background:#f0c04022;color:#f0c040}.badge.gateway{background:#7c4dff22;color:#b388ff}
+.badge.booking{background:#7c4dff22;color:#b388ff}.badge.selecting,.badge.navigating,.badge.opening{background:#ffffff11;color:#cdbbd2}
+.meta{display:flex;gap:16px;margin-top:6px;font-size:12px;color:#a89db0}
+.meta span{display:flex;gap:4px;align-items:center}
+</style></head>
+<body>
+<h1>Payment Sessions</h1>
+<p class="muted">Live status of each payment session. Complete OTP and PIN manually in each browser window.</p>
+<div id="sessions" class="muted">Waiting for a run...</div>
 <script>
-async function refresh(){try{const r=await fetch("/api/group/state");const s=await r.json();const rows=s.sessions||[];document.querySelector("#sessions").innerHTML=rows.length?rows.map(x=>"<article><b>#"+x.index+"</b><div><strong>"+x.name+" · "+x.phone_mask+"</strong><small>"+x.status+": "+x.detail+"</small></div></article>").join(""):"Waiting for a run..."}catch{}}
+const STATUS_TEXT = {
+  queued:'Queued',opening:'Opening',navigating:'Navigating',selecting:'Selecting seats',
+  booking:'Booking',gateway:'Payment gateway',manual_payment:'Complete payment in browser',
+  waiting_otp:'OTP needed',pin_required:'Enter PIN',completed:'Payment confirmed',
+  failed:'Failed',stopped:'Stopped',ready:'Seats verified'
+};
+async function refresh(){try{
+  const r=await fetch("/api/group/state");const s=await r.json();const rows=s.sessions||[];
+  document.querySelector("#sessions").innerHTML=rows.length?rows.map(x=>{
+    const label=STATUS_TEXT[x.status]||x.status;
+    const amount=x.amount!=null?'BDT '+Number(x.amount).toLocaleString('en-BD'):'—';
+    return `<article class="${x.status}">
+      <b class="idx">#${x.index}</b>
+      <div class="info">
+        <strong>${x.name} · ${x.phone_mask||x.phone||''}</strong>
+        <small>${(x.seats||[]).join(', ')}</small>
+        <span class="badge ${x.status}">${label}</span>
+        <small>${x.detail||''}</small>
+        <div class="meta">
+          <span>💰 ${amount}</span>
+          ${x.invoice?`<span>🧾 ${x.invoice}</span>`:''}
+        </div>
+      </div>
+    </article>`;
+  }).join(""):`<p class="muted">Waiting for a run...</p>`;
+}catch{}}
 refresh();setInterval(refresh,1000);
 </script></body></html>
