@@ -84,6 +84,7 @@
         <div class="run-summary"><div class="radar"><span></span></div><div><strong id="run-phase">Waiting for selection</strong><p id="run-detail">Nothing is booked while you are choosing.</p></div></div>
         <div id="session-list" class="run-sessions"><div class="run-empty"><span>Payment sessions will appear here once you launch.</span></div></div>
         <button id="stop-button" class="stop-button" type="button" hidden>Stop run</button>
+        <button id="close-browser-button" class="stop-button" type="button" hidden style="border-color:rgba(255,200,100,.3);color:#f0c040">Close all browsers</button>
       </section>
     </div>
 
@@ -118,7 +119,7 @@
 
     <section class="security-note">
       <div class="lock">&#9679;</div>
-      <div><strong>OTP on this page. PIN only inside bKash.</strong><p>The OTP prompt identifies the full bKash number, attendee, seats, amount and invoice. No number, name, OTP or PIN is saved.</p></div>
+      <div><strong>Complete OTP + PIN manually in the browser.</strong><p>The bot navigates to bKash and fills the wallet number. You handle OTP and PIN in the visible browser window. No number, name, OTP or PIN is saved.</p></div>
     </section>
   </main>
 
@@ -137,6 +138,6 @@
     </section>
   </div>
 
-  <script src="/static/picker.js?v=10"></script>
+  <script src="/static/picker.js?v=11"></script>
 </body>
 </html>

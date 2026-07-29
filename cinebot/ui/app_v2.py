@@ -119,6 +119,7 @@ async def lifespan(app: FastAPI):
         manager: GroupBookingManager = app.state.group
         if manager.busy:
             await manager.stop()
+        await manager.close_browser()
         if app.state.sniper.busy:
             await app.state.sniper.shutdown()
 
@@ -253,6 +254,11 @@ def group_otp(body: OtpIn, request: Request):
 @app.post("/api/group/stop")
 async def group_stop(request: Request):
     return {"stopped": await _group(request).stop()}
+
+
+@app.post("/api/group/close-browser")
+async def group_close_browser(request: Request):
+    return {"closed": await _group(request).close_browser()}
 
 
 def _sniper(request: Request) -> SniperManager:
