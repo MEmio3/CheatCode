@@ -6,7 +6,7 @@
   <link rel="icon" href="/favicon.ico" />
   <meta name="theme-color" content="#0b0711" />
   <title>Cineplex Group Booker</title>
-  <link rel="stylesheet" href="/static/picker.css?v=5" />
+  <link rel="stylesheet" href="/static/picker.css?v=6" />
 </head>
 <body>
   <main class="shell">
@@ -99,7 +99,7 @@
         <label><span>Target movie</span><input id="snipe-movie" type="text" placeholder="e.g. Spider-Man: Brand New Day" required /></label>
         <label><span>Show date</span><input id="snipe-date" type="date" required /></label>
         <label><span>Preferred halls (optional)</span><input id="snipe-halls" type="text" placeholder="6, 7 (empty = any)" /></label>
-        <label><span>Time from (optional)</span><input id="snipe-start" type="time" /></label>
+        <label><span>Time from (optional)</span><input id="snipe-time-start" type="time" /></label>
         <label><span>Time to (optional)</span><input id="snipe-end" type="time" /></label>
         <label><span>Total seats</span><input id="snipe-total" type="number" min="1" max="40" value="1" /></label>
         <label><span>Primary rows (optional)</span><input id="snipe-rows" type="text" placeholder="E,F (empty = automatic)" /></label>
@@ -108,9 +108,18 @@
         <label><span>Telegram bot token</span><input id="telegram-token" type="password" autocomplete="off" placeholder="Stored in Windows Credential Manager" /></label>
         <label><span>Telegram chat ID</span><input id="telegram-chat" type="text" autocomplete="off" placeholder="Required for 30-minute updates" /></label>
       </div>
+      <div class="snipe-payments">
+        <div class="snipe-payments-head">
+          <strong>Sniper payment methods (saved, sniper-only)</strong>
+          <label class="payments-count">Count <input id="snipe-pay-count" type="number" min="1" max="8" value="4" /></label>
+        </div>
+        <p class="snipe-help">Saved with the sniper and used ONLY when it fires — separate from the manual picker above.</p>
+        <div id="snipe-attendees" class="payment-fields" aria-live="polite"></div>
+      </div>
       <div id="snipe-status" class="inline-status ready">No sniper running. Save a target, then start watching.</div>
       <div class="snipe-actions">
         <button id="snipe-save" class="quiet-button" type="button">Save target + payments</button>
+        <button id="snipe-test" class="quiet-button" type="button">Test now</button>
         <button id="telegram-save" class="quiet-button" type="button">Save Telegram</button>
         <button id="snipe-start" class="primary-button" type="button"><span>Start watching</span><span>&rarr;</span></button>
         <button id="snipe-stop" class="stop-button" type="button" hidden>Stop sniper</button>
@@ -139,5 +148,6 @@
   </div>
 
   <script src="/static/picker.js?v=11"></script>
+  <script src="/static/picker.js?v=15"></script>
 </body>
 </html>
