@@ -612,6 +612,9 @@ class GroupBookingManager:
             if "fail" in url or "cancel" in url or "error" in url:
                 raise GroupPlanError("Payment gateway returned a failure redirect.")
             await page.wait_for_timeout(1_500)
+        # TODO: group_booking.py silently returns on timeout (letting the user
+        # finish manual OTP/PIN), but this file raises. Align the two once the
+        # preferred behavior is decided.
         raise GroupPlanError(
             "Timed out waiting for the secure bKash PIN/payment confirmation."
         )
