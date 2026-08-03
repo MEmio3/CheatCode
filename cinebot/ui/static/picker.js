@@ -373,8 +373,10 @@ function updateAssignments() {
   document.querySelectorAll(".session-tab").forEach((tab, index) => {
     tab.querySelector("b").textContent = `${(assignments[index] || []).length}/10`;
   });
-  document.querySelectorAll(".payment-entry").forEach((entry, index) => {
-    entry.querySelector(".payment-seats").textContent = (assignments[index] || []).length
+  document.querySelectorAll("#payment-fields .payment-entry").forEach((entry, index) => {
+    const el = entry.querySelector(".payment-seats");
+    if (!el) return;
+    el.textContent = (assignments[index] || []).length
       ? (assignments[index] || []).join(", ")
       : "No seats assigned";
   });
