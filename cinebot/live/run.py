@@ -102,9 +102,11 @@ def main() -> int:
     print(f"[run] name={name!r} bkash=...{bkash[-4:]}")
 
     from playwright.sync_api import sync_playwright
+    import os
+    headless_flag = os.getenv("CINEBOT_HEADLESS", "true").lower() not in ("false", "0", "no")
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
+        browser = pw.chromium.launch(headless=headless_flag)
         page = browser.new_context(user_agent=_UA, viewport={"width": 1320, "height": 900}).new_page()
 
         # capture token + device-key during navigation so we can fetch live seats

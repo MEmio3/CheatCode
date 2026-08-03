@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 import uuid
@@ -24,6 +25,14 @@ from .auth import ORIGIN, _UA
 from .catalog import available_seats_by_label
 
 log = logging.getLogger("cinebot.live.group")
+
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    async def stealth_async(page: Any) -> None:
+        await page.context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => false});"
+        )
 
 
 @dataclass(frozen=True)
@@ -282,6 +291,22 @@ class GroupBookingManager:
         self.browser_open = False
         return closed
 
+    async def _request_otp(self, session: PaymentSession, detail: str = "") -> str:
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        session._otp_future = future
+        session.otp_required = True
+        self._set_session(
+            session,
+            "waiting_otp",
+            detail or "Enter the verification code / PIN received from bKash.",
+        )
+        try:
+            return await future
+        finally:
+            session.otp_required = False
+            session._otp_future = None
+
     def submit_otp(self, session_id: str, code: str) -> None:
         session = self.sessions.get(session_id)
         if session is None:
@@ -304,10 +329,11 @@ class GroupBookingManager:
             from playwright.async_api import async_playwright
 
             async with async_playwright() as pw:
+                headless_flag = os.getenv("CINEBOT_HEADLESS", "true").lower() not in ("false", "0", "no")
                 try:
-                    self._browser = await pw.chromium.launch(channel="chrome", headless=False)
+                    self._browser = await pw.chromium.launch(channel="chrome", headless=headless_flag)
                 except Exception:
-                    self._browser = await pw.chromium.launch(headless=False)
+                    self._browser = await pw.chromium.launch(headless=headless_flag)
                 self.browser_open = True
                 target, chunks = await self._verify_target_and_seats(
                     self._browser, target, payments
@@ -408,6 +434,7 @@ class GroupBookingManager:
             user_agent=_UA, viewport={"width": 1360, "height": 900}
         )
         page = await context.new_page()
+        await stealth_async(page)
         try:
             token, device_key = await self._guest_login(page)
             client = CineplexClient(device_key=device_key, token=token)
@@ -543,6 +570,7 @@ class GroupBookingManager:
         )
         self._contexts.append(context)
         page = await context.new_page()
+        await stealth_async(page)
         try:
             await self._show_window_label(page, session, "Opening")
             stagger = max(0, session.index - 1) * 2
@@ -754,20 +782,47 @@ class GroupBookingManager:
 
             otp_input = page.locator(
                 "input[placeholder*='6 digit' i], input[placeholder*='code' i], "
-                "input[name*='otp' i], input[id*='otp' i]"
+                "input[name*='otp' i], input[id*='otp' i], input[type='password'], input[type='text']"
             ).first
             await otp_input.wait_for(state="visible", timeout=25_000)
-            # MANUAL HANDOFF: the bot stops here. The user enters OTP + PIN
-            # directly in this browser window. We do not automate, do not close.
-            session.otp_required = False
-            session.pin_required = True
-            self._set_session(
-                session,
-                "manual_otp",
-                "Reached the bKash OTP page. Enter OTP + PIN in this window.",
+
+            # Request OTP from UI modal and fill it into bKash
+            log.info(f"[Session {session.index}] Reached bKash OTP prompt. Requesting OTP from web UI...")
+            otp_code = await self._request_otp(
+                session, "Enter the 6-digit OTP code sent via bKash SMS."
             )
-            await self._show_window_label(page, session, "Enter OTP + PIN here")
-            # Watch the window for success/failure without entering anything.
+            log.info(f"[Session {session.index}] Submitting OTP to bKash...")
+            await otp_input.fill(otp_code)
+            confirm_otp = page.locator(
+                "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
+                "a:has-text('Confirm'), button:has-text('Submit')"
+            ).last
+            await confirm_otp.click(timeout=8_000)
+            await page.wait_for_timeout(1_000)
+
+            # Wait for PIN prompt or payment result page
+            pin_input = page.locator(
+                "input[placeholder*='PIN' i], input[name*='pin' i], input[id*='pin' i], input[type='password']"
+            ).first
+            try:
+                await pin_input.wait_for(state="visible", timeout=15_000)
+                log.info(f"[Session {session.index}] Reached bKash PIN prompt. Requesting PIN from web UI...")
+                session.pin_required = True
+                pin_code = await self._request_otp(
+                    session, "Enter your 5-digit bKash account PIN."
+                )
+                log.info(f"[Session {session.index}] Submitting PIN to bKash...")
+                await pin_input.fill(pin_code)
+                confirm_pin = page.locator(
+                    "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
+                    "a:has-text('Confirm'), button:has-text('Submit')"
+                ).last
+                await confirm_pin.click(timeout=8_000)
+            except Exception as e:
+                log.info(f"[Session {session.index}] PIN input step check: {e}")
+            finally:
+                session.pin_required = False
+
             await self._wait_for_payment_result(page, session)
         except asyncio.CancelledError:
             raise

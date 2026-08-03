@@ -79,6 +79,10 @@ class TelegramConfigIn(BaseModel):
     chat_id: str = Field(..., min_length=1, max_length=40)
 
 
+class HeadlessIn(BaseModel):
+    headless: bool
+
+
 def _to_snipe_config(body: SnipeConfigIn) -> SnipeConfig:
     return SnipeConfig(
         target_movie=body.target_movie,
@@ -176,6 +180,18 @@ def group_config():
         "max_total_seats": 40,
         "pin_policy": "PIN is entered only in the secure bKash window.",
     }
+
+
+@app.get("/api/settings/headless")
+def get_headless_setting():
+    val = os.getenv("CINEBOT_HEADLESS", "true").lower() not in ("false", "0", "no")
+    return {"headless": val}
+
+
+@app.post("/api/settings/headless")
+def set_headless_setting(body: HeadlessIn):
+    os.environ["CINEBOT_HEADLESS"] = "true" if body.headless else "false"
+    return {"headless": body.headless}
 
 
 @app.get("/api/catalog/locations")
