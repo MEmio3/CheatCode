@@ -367,7 +367,7 @@ function paintSeatAssignments() {
 }
 
 function updateAssignments() {
-  const max = Math.max(assignments.length, document.querySelectorAll(".session-tab").length, document.querySelectorAll(".payment-entry").length);
+  const max = Math.max(assignments.length, document.querySelectorAll(".session-tab").length, document.querySelectorAll("#payment-fields .payment-entry").length);
   const total = assignments.reduce((sum, seats) => sum + seats.length, 0);
   $("seat-count").textContent = total;
   document.querySelectorAll(".session-tab").forEach((tab, index) => {
@@ -388,7 +388,7 @@ function normalizePhone(value) {
 }
 
 function readPayments() {
-  const entries = [...document.querySelectorAll(".payment-entry")];
+  const entries = [...document.querySelectorAll("#payment-fields .payment-entry")];
   const payments = entries.map((entry, index) => ({
     name: entry.querySelector(".name-input").value.replace(/\s+/g, " ").trim(),
     bkash_number: normalizePhone(entry.querySelector(".phone-input").value),
@@ -638,7 +638,7 @@ function setSnipeStatus(message, kind = "ready") {
 }
 
 function readAttendees() {
-  const entries = [...document.querySelectorAll(".payment-entry")];
+  const entries = [...document.querySelectorAll("#snipe-attendees .payment-entry")];
   const attendees = entries.map((entry) => ({
     name: entry.querySelector(".name-input").value.replace(/\s+/g, " ").trim(),
     bkash: normalizePhone(entry.querySelector(".phone-input").value),
