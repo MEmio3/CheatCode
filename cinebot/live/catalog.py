@@ -7,11 +7,20 @@ created by this module.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Callable
 
 from ..browse import CineplexClient
 from ..group import display_show_time
 from .auth import ORIGIN, _UA
+
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    async def stealth_async(page: Any) -> None:
+        await page.context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => false});"
+        )
 
 
 class CatalogError(RuntimeError):
@@ -138,9 +147,9 @@ class CatalogManager:
         from playwright.async_api import async_playwright
 
         last_error: Exception | None = None
-        # Go straight to headed Chrome — headless is rejected by reCAPTCHA v3
-        # (wastes 30s failing before the fallback). Headed takes ~10s and works.
-        for headless in (False,):
+        import os
+        headless_flag = os.getenv("CINEBOT_HEADLESS", "true").lower() not in ("false", "0", "no")
+        for headless in (headless_flag,):
             try:
                 async with async_playwright() as pw:
                     try:
@@ -153,6 +162,7 @@ class CatalogManager:
                         user_agent=_UA, viewport={"width": 1280, "height": 850}
                     )
                     page = await context.new_page()
+                    await stealth_async(page)
                     try:
                         await page.goto(
                             ORIGIN, wait_until="domcontentloaded", timeout=30_000

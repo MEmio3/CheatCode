@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 import uuid
@@ -16,6 +17,14 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..browse import CineplexClient
+
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    async def stealth_async(page: Any) -> None:
+        await page.context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => false});"
+        )
 from ..group import (
     TARGET_DATE,
     TARGET_HALL,
@@ -179,16 +188,15 @@ class GroupBookingManager:
         try:
             from playwright.async_api import async_playwright
 
+            import os
             async with async_playwright() as pw:
+                headless_flag = os.getenv("CINEBOT_HEADLESS", "true").lower() not in ("false", "0", "no")
                 try:
-                    # Prefer the user's installed Chrome: it starts faster, is
-                    # already present on this PC, and behaves like their normal
-                    # Cineplex browser session without a separate download.
                     self._browser = await pw.chromium.launch(
-                        channel="chrome", headless=False
+                        channel="chrome", headless=headless_flag
                     )
                 except Exception:
-                    self._browser = await pw.chromium.launch(headless=False)
+                    self._browser = await pw.chromium.launch(headless=headless_flag)
                 self.browser_open = True
                 show, chunks = await self._discover_show_and_seats(self._browser)
                 names = validate_names(names, required=len(chunks))
@@ -288,6 +296,7 @@ class GroupBookingManager:
             user_agent=_UA, viewport={"width": 1360, "height": 900}
         )
         page = await context.new_page()
+        await stealth_async(page)
         try:
             token, device_key = await self._guest_login(page)
             client = CineplexClient(device_key=device_key, token=token)
@@ -375,6 +384,7 @@ class GroupBookingManager:
         )
         self._contexts.append(context)
         page = await context.new_page()
+        await stealth_async(page)
         try:
             self._set_session(session, "opening", "Opening a private Cineplex session…")
             await self._guest_login(page)

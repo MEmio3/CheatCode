@@ -8,6 +8,7 @@ lands.
 from __future__ import annotations
 
 import json
+import os
 import time
 
 ORIGIN = "https://ticket.cineplexbd.com"
@@ -18,8 +19,17 @@ _UA = (
 )
 
 
+try:
+    from playwright_stealth import stealth_sync
+except ImportError:
+    def stealth_sync(page):
+        page.context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => false});"
+        )
+
+
 def guest_token_via_browser(
-    headless: bool = False, wait_ms: int = 60000, verbose: bool = True
+    headless: bool = True, wait_ms: int = 60000, verbose: bool = True
 ) -> dict:
     """Click Guest Login and return {'token', 'clicked', 'url', 'error', 'manual'}.
 
@@ -34,6 +44,7 @@ def guest_token_via_browser(
         browser = pw.chromium.launch(headless=headless)
         ctx = browser.new_context(user_agent=_UA, viewport={"width": 1280, "height": 850})
         page = ctx.new_page()
+        stealth_sync(page)
 
         def on_response(resp):
             try:
