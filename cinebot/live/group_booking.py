@@ -910,7 +910,7 @@ class GroupBookingManager:
                 session.pin_required = False
                 self._set_session(session, "completed", "Payment confirmed.")
                 return
-# Immediate failure detection
+            # Immediate failure detection
             for pattern in _FAIL_PATTERNS:
                 if pattern in text:
                     raise GroupPlanError(f"bKash payment failed: {pattern}")
@@ -967,7 +967,7 @@ class GroupBookingManager:
             page.locator(f'[data-seat="{label}"]').first,
         )
         last_error: Exception | None = None
-        for locator, timeout in candidates:
+        for locator in selectors:
             try:
                 await locator.wait_for(state="visible", timeout=1_500)
                 return locator
@@ -987,16 +987,6 @@ class GroupBookingManager:
             await asyncio.sleep(0.1)
         raise GroupPlanError("Cineplex did not enable Purchase in time.")
 
-    async def _dismiss_swal2(self, page) -> None:
-        try:
-            btns = page.locator(".swal2-confirm")
-            if await btns.count() > 0 and await btns.first.is_visible():
-                await btns.first.click(timeout=1500)
-                await page.wait_for_timeout(120)
-                if await page.locator(".swal2-confirm").count() > 0:
-                    await page.locator(".swal2-confirm").first.click(timeout=1000)
-        except Exception:
-            pass
 
     def _set_session(self, session: PaymentSession, status: str, detail: str) -> None:
         session.status = status
