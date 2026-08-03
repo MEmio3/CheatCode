@@ -69,7 +69,8 @@ class SnipeConfigIn(BaseModel):
     total_seats: int = Field(1, ge=1, le=40)
     primary_rows: list[str] = Field(default_factory=list, max_length=26)
     fill_row: str = Field("", max_length=3)
-    trim_last: int = Field(2, ge=0, le=8)
+    tolerance: int = Field(3, ge=1, le=6)
+    force: bool = False
     num_payments: int = Field(1, ge=1, le=8)
     attendees: list[SnipeAttendeeIn] = Field(..., min_length=1, max_length=8)
 
@@ -92,7 +93,8 @@ def _to_snipe_config(body: SnipeConfigIn) -> SnipeConfig:
         total_seats=body.total_seats,
         primary_rows=list(body.primary_rows),
         fill_row=body.fill_row,
-        trim_last=body.trim_last,
+        tolerance=body.tolerance,
+        force=body.force,
         num_payments=body.num_payments,
         attendees=[
             SnipeAttendee(name=a.name, bkash=a.bkash) for a in body.attendees

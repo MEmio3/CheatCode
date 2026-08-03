@@ -2,13 +2,14 @@
 on a specific date/hall/time window, then fire a four-session group booking for
 a live-computed block of seats.
 
-Seat plan is a rule, not a fixed label list, so it adapts to the new show's
-layout when the target drops:
-
-    take all of the configured primary rows (or choose automatically when empty) except the last `trim_last`
-    seats of each, then fill the remainder from `fill_row` (default G) until
-    `total_seats` (default 36). The assembled labels are split into <=10 chunks
-    and zipped one-to-one with the four attendees.
+Seat plan is computed from the live layout, not a fixed label list, so it
+adapts when the target drops. ``compute_seat_plan`` picks the most cohesive
+arrangement for the group: a single unbroken block when one fits, otherwise
+balanced blocks across adjacent rows (6+5, then 7+4...) so nobody is isolated.
+``tolerance`` is the isolation floor (a fragment smaller than it counts its
+seats as isolated and is avoided); ``force`` bypasses cohesion and just grabs
+the first ``total_seats`` available. The assembled labels are split into <=10
+chunks and zipped one-to-one with the attendees.
 
 The target + attendees are persisted to ``snipe_config.json`` (gitignored — it
 holds attendee names and bKash numbers). The watcher reuses CatalogManager to
@@ -54,7 +55,8 @@ class SnipeConfig:
     total_seats: int = 1
     primary_rows: list[str] = field(default_factory=list)
     fill_row: str = ""
-    trim_last: int = 0
+    tolerance: int = 3
+    force: bool = False
     num_payments: int = 1
     allow_duplicate_identity: bool = False
     attendees: list[SnipeAttendee] = field(default_factory=list)
@@ -72,7 +74,8 @@ class SnipeConfig:
             "total_seats": self.total_seats,
             "primary_rows": list(self.primary_rows),
             "fill_row": self.fill_row,
-            "trim_last": self.trim_last,
+            "tolerance": self.tolerance,
+            "force": self.force,
             "num_payments": self.num_payments,
             "allow_duplicate_identity": self.allow_duplicate_identity,
             "attendees": [{"name": a.name, "bkash": a.bkash} for a in self.attendees],
@@ -92,7 +95,8 @@ class SnipeConfig:
             total_seats=int(d.get("total_seats") or 1),
             primary_rows=[str(r) for r in (d.get("primary_rows") or [])],
             fill_row=str(d.get("fill_row") or ""),
-            trim_last=int(d.get("trim_last") or 0),
+            tolerance=int(d.get("tolerance") or 3),
+            force=bool(d.get("force", False)),
             num_payments=int(d.get("num_payments") or 1),
             allow_duplicate_identity=bool(d.get("allow_duplicate_identity", False)),
             attendees=[
@@ -118,6 +122,8 @@ class SnipeConfig:
             raise GroupPlanError("Show-time start must be earlier than the end.")
         if not (1 <= self.total_seats <= 40):
             raise GroupPlanError("Total seats must be between 1 and 40.")
+        if not (1 <= self.tolerance <= 6):
+            raise GroupPlanError("Tolerance must be between 1 and 6.")
         self.primary_rows = [row.strip().upper() for row in self.primary_rows if row.strip()]
         self.fill_row = self.fill_row.strip().upper()
         if len(set(self.primary_rows)) != len(self.primary_rows) or (self.fill_row and self.fill_row in self.primary_rows):
@@ -184,15 +190,217 @@ def is_active() -> bool:
     return os.path.exists(ACTIVE_PATH)
 
 
+@dataclass(frozen=True)
+class _Block:
+    row_index: int
+    row_label: str
+    cmin: int
+    cmax: int
+    size: int
+    labels: tuple[str, ...]
+
+
+def _row_runs(cells: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Split a row's available cells (already sorted by ``cidx``) into maximal
+    physically-contiguous runs.
+
+    Contiguity is physical, not just "available": a taken seat OR an aisle gap
+    (a jump in ``cidx``) breaks a run, so two seats across an aisle are never
+    treated as one block.
+    """
+    runs: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    prev: int | None = None
+    for cell in cells:
+        cidx = int(cell.get("cidx") or 0)
+        if prev is not None and cidx != prev + 1:
+            runs.append(current)
+            current = []
+        current.append(cell)
+        prev = cidx
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _available_rows(
+    seat_type: dict[str, Any],
+) -> list[tuple[int, str, list[list[dict[str, Any]]]]]:
+    """Rows with at least one available seat -> ``(row_index, label, runs)``."""
+    out: list[tuple[int, str, list[list[dict[str, Any]]]]] = []
+    for ridx, row in enumerate(seat_type.get("rows") or []):
+        label = str(row.get("label") or "").upper()
+        cells = sorted(
+            (
+                c
+                for c in (row.get("cells") or [])
+                if c.get("status") == "available" and c.get("label")
+            ),
+            key=lambda c: int(c.get("cidx") or 0),
+        )
+        runs = _row_runs(cells)
+        if runs:
+            out.append((ridx, label, runs))
+    return out
+
+
+def _best_window(run: list[dict[str, Any]], size: int, n_cols: int) -> list[dict[str, Any]]:
+    """The window of ``size`` consecutive seats in ``run`` whose center is
+    closest to the hall's horizontal center."""
+    target = (max(1, n_cols) - 1) / 2.0
+    best_off, best_d = 0, float("inf")
+    for off in range(0, len(run) - size + 1):
+        window = run[off : off + size]
+        center = (int(window[0]["cidx"]) + int(window[-1]["cidx"])) / 2.0
+        d = abs(center - target)
+        if d < best_d:
+            best_d, best_off = d, off
+    return run[best_off : best_off + size]
+
+
+def _make_block(
+    run: list[dict[str, Any]], row_index: int, row_label: str, size: int, n_cols: int
+) -> _Block:
+    window = _best_window(run, size, n_cols)
+    cidxs = [int(c["cidx"]) for c in window]
+    return _Block(
+        row_index=row_index,
+        row_label=row_label,
+        cmin=min(cidxs),
+        cmax=max(cidxs),
+        size=size,
+        labels=tuple(str(c["label"]) for c in window),
+    )
+
+
+def _selection_cost(
+    blocks: list[_Block], tolerance: int, preferred: set[str], n_cols: int
+) -> tuple:
+    """Lexicographic cost of a complete selection (every element: lower better).
+
+    Order: fewest isolated people, then fewest fragments, then tightest row
+    span, then tightest column span, then best-centered, then preferred rows.
+    """
+    isolated = sum(b.size for b in blocks if b.size < tolerance)
+    frags = len(blocks)
+    row_span = max(b.row_index for b in blocks) - min(b.row_index for b in blocks)
+    col_extent = max(b.cmax for b in blocks) - min(b.cmin for b in blocks)
+    target = (max(1, n_cols) - 1) / 2.0
+    center = sum(((b.cmin + b.cmax) / 2.0 - target) ** 2 for b in blocks)
+    non_pref = sum(1 for b in blocks if b.row_label not in preferred)
+    return (isolated, frags, row_span, col_extent, center, non_pref)
+
+
+def _cohesive_select(
+    rows: list[tuple[int, str, list[list[dict[str, Any]]]]],
+    total: int,
+    tolerance: int,
+    preferred: list[str],
+    fill_row: str,
+    n_cols: int,
+) -> Optional[list[_Block]]:
+    """Search contiguous-block combinations summing to ``total``; return the
+    min-cost selection, or ``None`` if no combination reaches ``total``.
+
+    A row with several runs (e.g. a middle-taken row) may contribute one block
+    per run, but fragment count is penalized so that only happens when the
+    alternative is leaving seats unfilled.
+    """
+    # Flatten runs into independent sources, biggest first so low-fragment
+    # solutions surface early (improves the prefix prune below).
+    sources: list[tuple[int, str, list[dict[str, Any]]]] = []
+    for ridx, label, runs in rows:
+        for run in runs:
+            sources.append((ridx, label, run))
+    sources.sort(key=lambda s: len(s[2]), reverse=True)
+
+    # Precompute the best-centered block for each (source, size) once.
+    candidates: list[dict[int, _Block]] = []
+    for ridx, label, run in sources:
+        candidates.append({s: _make_block(run, ridx, label, s, n_cols) for s in range(1, len(run) + 1)})
+
+    preferred_set = set(preferred)
+    if fill_row:
+        preferred_set.add(fill_row)
+    max_frags = min(8, total)
+
+    best: dict[str, Any] = {"cost": None, "blocks": None}
+
+    def recurse(i: int, remaining: int, chosen: list[_Block], iso: int) -> None:
+        if remaining == 0:
+            cost = _selection_cost(chosen, tolerance, preferred_set, n_cols)
+            if best["cost"] is None or cost < best["cost"]:
+                best["cost"] = cost
+                best["blocks"] = list(chosen)
+            return
+        if i >= len(sources) or len(chosen) >= max_frags:
+            return
+        # Prefix prune: isolated-people and fragment-count only grow as we add
+        # blocks, so a partial already worse than the best complete selection
+        # on those two dominant axes cannot be improved.
+        if best["cost"] is not None:
+            if (iso, len(chosen)) > (best["cost"][0], best["cost"][1]):
+                return
+        # Option A: skip this run.
+        recurse(i + 1, remaining, chosen, iso)
+        # Option B: take a block of size s from this run (largest first).
+        max_s = min(len(sources[i][2]), remaining)
+        for s in range(max_s, 0, -1):
+            chosen.append(candidates[i][s])
+            recurse(i + 1, remaining - s, chosen, iso + (s if s < tolerance else 0))
+            chosen.pop()
+
+    recurse(0, total, [], 0)
+    return best["blocks"]
+
+
+def _force_fill(
+    rows: list[tuple[int, str, list[list[dict[str, Any]]]]],
+    primary_rows: list[str],
+    fill_row: str,
+    total: int,
+) -> list[str]:
+    """Cohesion-agnostic fill: the first ``total`` available seats, scanning
+    preferred rows first (then the fill row, then the rest) left-to-right."""
+    pref_order = list(dict.fromkeys(primary_rows))
+    if fill_row and fill_row not in pref_order:
+        pref_order.append(fill_row)
+    by_label = {r[1]: r for r in rows}
+    ordered = [by_label[lbl] for lbl in pref_order if lbl in by_label]
+    ordered += [r for r in rows if r[1] not in set(pref_order)]
+    picked: list[str] = []
+    for _, _, runs in ordered:
+        for run in runs:
+            for cell in run:
+                picked.append(str(cell["label"]))
+                if len(picked) == total:
+                    return picked
+    return picked
+
+
 def compute_seat_plan(
     seat_catalog: dict[str, Any],
     seat_type_id: int,
     primary_rows: list[str],
     fill_row: str,
     total: int,
-    trim_last: int = 2,
+    *,
+    tolerance: int = 3,
+    force: bool = False,
 ) -> list[str]:
-    """Resolve the exact seat labels from a live seat map per the plan rule."""
+    """Resolve ``total`` seat labels from a live seat map as one cohesive group.
+
+    Prefers a single unbroken block. When the group must split, it splits into
+    balanced blocks across adjacent rows so nobody is isolated: a fragment
+    smaller than ``tolerance`` counts its seats as isolated and is avoided
+    (searching harder / expanding rows first). ``force`` bypasses cohesion and
+    just grabs the first ``total`` available seats.
+
+    Labels come back grouped by row in physical order, so the caller's
+    payment-chunking keeps each transaction physically contiguous.
+    """
+    if total <= 0:
+        raise GroupPlanError("Total seats must be positive.")
     seat_type = next(
         (st for st in (seat_catalog.get("seat_types") or [])
          if int(st.get("id") or 0) == int(seat_type_id)),
@@ -201,48 +409,30 @@ def compute_seat_plan(
     if seat_type is None:
         raise GroupPlanError("The chosen seat class is not in the live layout.")
 
-    by_row: dict[str, list[dict[str, Any]]] = {}
-    for row in seat_type.get("rows") or []:
-        cells = [
-            c for c in (row.get("cells") or [])
-            if c.get("label") and c.get("status") == "available"
-        ]
-        cells.sort(key=lambda c: int(c.get("cidx") or 0))
-        by_row[str(row.get("label") or "")] = cells
+    rows = _available_rows(seat_type)
+    if not rows:
+        raise GroupPlanError("No available seats remain in the live layout.")
 
-    picked: list[dict[str, Any]] = []
-    if not primary_rows:
-        automatic_rows = [row for row, cells in by_row.items() if cells]
-        picked = [cell for row in automatic_rows for cell in by_row[row]][:total]
-        labels = [str(c["label"]) for c in picked]
-        if len(labels) != total:
-            raise GroupPlanError(f"Could not find {total} available seats in the live layout.")
-        return labels
+    pref = [str(r).strip().upper() for r in primary_rows if str(r).strip()]
+    fill = (fill_row or "").strip().upper()
 
-    for r in primary_rows:
-        cells = by_row.get(r, [])
-        if len(cells) <= trim_last:
-            raise GroupPlanError(
-                f"Row {r} has only {len(cells)} available seat(s); "
-                f"cannot drop the last {trim_last}."
-            )
-        picked.extend(cells[: len(cells) - trim_last])
+    if force:
+        labels = _force_fill(rows, pref, fill, total)
+    else:
+        n_cols = int(seat_type.get("n_cols") or 0)
+        blocks = _cohesive_select(rows, total, tolerance, pref, fill, n_cols)
+        if blocks is None:
+            # No cohesive combination reached `total`; fall back to any fill
+            # rather than abort the whole run.
+            labels = _force_fill(rows, pref, fill, total)
+        else:
+            blocks.sort(key=lambda b: (b.row_index, b.cmin))
+            labels = [label for b in blocks for label in b.labels]
 
-    need = total - len(picked)
-    if need < 0:
-        picked = picked[:total]
-    elif need > 0:
-        fill_cells = by_row.get(fill_row, [])
-        if len(fill_cells) < need:
-            raise GroupPlanError(
-                f"Need {need} more seat(s) from row {fill_row} to reach {total}, "
-                f"only {len(fill_cells)} available there."
-            )
-        picked.extend(fill_cells[:need])
-
-    labels = [str(c["label"]) for c in picked]
     if len(labels) != total:
-        raise GroupPlanError(f"Could not assemble {total} seats (got {len(labels)}).")
+        raise GroupPlanError(
+            f"Could not assemble {total} seats; only {len(labels)} available in the live layout."
+        )
     return labels
 
 
@@ -518,7 +708,8 @@ class SniperManager:
             list(cfg.primary_rows),
             cfg.fill_row,
             cfg.total_seats,
-            cfg.trim_last,
+            tolerance=cfg.tolerance,
+            force=cfg.force,
         )
         chunks = chunk_labels_into(labels, cfg.num_payments)
         if len(chunks) != len(cfg.attendees):

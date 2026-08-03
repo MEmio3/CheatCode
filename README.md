@@ -115,11 +115,15 @@ telegram_bot_token=123456:replace-with-your-token
 userID=replace-with-your-chat-id
 ```
 
-The release rule takes seats from the configured primary rows, omits the
-configured trailing seats from each row, then fills any remainder from the
-fill row. If rows are left empty, it selects available seats automatically from
-the live layout. The application validates live availability and fails rather
-than choosing replacements outside the selected rule.
+The release rule picks the most cohesive block of seats for the group: a single
+unbroken run when one fits, otherwise balanced blocks across adjacent rows
+(e.g. 6+5, then 7+4) so nobody is isolated. **Tolerance** sets the smallest
+fragment treated as a group (smaller fragments are avoided); **Force** ignores
+cohesion and grabs the first available seats to fill the total. If primary rows
+are left empty, it selects from the live layout automatically, preferring
+configured rows and expanding outward when they cannot fit the group. The
+application validates live availability and fails rather than substituting seats
+outside the selected rule.
 
 ## Privacy and payment safeguards
 

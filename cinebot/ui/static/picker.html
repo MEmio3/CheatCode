@@ -104,6 +104,8 @@
         <label><span>Total seats</span><input id="snipe-total" type="number" min="1" max="40" value="1" /></label>
         <label><span>Primary rows (optional)</span><input id="snipe-rows" type="text" placeholder="E,F (empty = automatic)" /></label>
         <label><span>Fill row (optional)</span><input id="snipe-fill" type="text" placeholder="G" /></label>
+        <label><span>Keep groups of at least</span><input id="snipe-tolerance" type="number" min="1" max="6" value="3" title="Smallest block the sniper treats as a group; smaller fragments are avoided so nobody sits alone" /></label>
+        <label class="override-warning"><input id="snipe-force" type="checkbox" /> <span>Force — ignore cohesion and grab any available seats to fill the total</span></label>
         <label><span>Poll every (sec)</span><input id="snipe-poll" type="number" min="15" value="75" /></label>
         <label><span>Telegram bot token</span><input id="telegram-token" type="password" autocomplete="off" placeholder="Stored in Windows Credential Manager" /></label>
         <label><span>Telegram chat ID</span><input id="telegram-chat" type="text" autocomplete="off" placeholder="Required for 30-minute updates" /></label>

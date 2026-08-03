@@ -719,7 +719,8 @@ function buildSnipeConfig() {
     total_seats: Number($("snipe-total").value) || 1,
     primary_rows: rows,
     fill_row: $("snipe-fill").value.trim().toUpperCase(),
-    trim_last: 0,
+    tolerance: Number($("snipe-tolerance").value) || 3,
+    force: $("snipe-force").checked,
     num_payments: snipePayCount(),
     allow_duplicate_identity: $("allow-duplicate-identity").checked,
     attendees,
@@ -743,6 +744,8 @@ async function loadSnipeConfig() {
     clampSnipePayCount();
     $("snipe-rows").value = (cfg.primary_rows || []).join(",");
     $("snipe-fill").value = cfg.fill_row || "";
+    $("snipe-tolerance").value = cfg.tolerance ?? 3;
+    if ($("snipe-force")) $("snipe-force").checked = Boolean(cfg.force);
     $("snipe-poll").value = cfg.poll_seconds;
     renderSnipeAttendees(snipePayCount());
     (cfg.attendees || []).forEach((att, i) => {
@@ -752,7 +755,7 @@ async function loadSnipeConfig() {
       if (att.bkash) e.querySelector(".phone-input").value = att.bkash;
     });
     setSnipeStatus(
-      `Saved target: ${cfg.target_movie} on ${cfg.show_date} — ${cfg.location_name}, halls ${(cfg.hall_ids||[]).join(",") || "any"}, times ${cfg.time_start || "any"}-${cfg.time_end || "any"}. ${cfg.total_seats} seats (rows ${(cfg.primary_rows||[]).join(",")} minus last ${cfg.trim_last ?? 2}, fill ${cfg.fill_row}). ${cfg.attendees.length} attendees.`,
+      `Saved target: ${cfg.target_movie} on ${cfg.show_date} — ${cfg.location_name}, halls ${(cfg.hall_ids||[]).join(",") || "any"}, times ${cfg.time_start || "any"}-${cfg.time_end || "any"}. ${cfg.total_seats} seats (rows ${(cfg.primary_rows||[]).join(",") || "auto"}, fill ${cfg.fill_row || "auto"}, keep groups of ${cfg.tolerance ?? 3}${cfg.force ? ", force-fill on" : ""}). ${cfg.attendees.length} attendees.`,
       "ready",
     );
   } catch {
