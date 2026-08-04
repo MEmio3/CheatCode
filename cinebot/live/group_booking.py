@@ -813,11 +813,24 @@ class GroupBookingManager:
                 session, "Enter the 6-digit OTP code sent via bKash SMS."
             )
             log.info(f"[Session {session.index}] Submitting OTP to bKash...")
-            await otp_input.fill(otp_code)
+            # Type digit-by-digit: bKash enables Confirm reactively once the
+            # masked input sees 6 real keystrokes, so plain fill() leaves the
+            # button disabled and the click times out.
+            await otp_input.click()
+            await otp_input.fill("")
+            await page.keyboard.type(otp_code, delay=60)
             confirm_otp = page.locator(
                 "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
-                "a:has-text('Confirm'), button:has-text('Submit')"
+                "a:has-text('Confirm'), button:has-text('Submit'), button:has-text('Verify')"
             ).last
+            try:
+                await self._wait_enabled(confirm_otp, timeout_ms=6_000)
+            except Exception:
+                await otp_input.click()
+                await otp_input.evaluate("el => { el.value = ''; }")
+                for ch in otp_code:
+                    await page.keyboard.press(ch)
+                await self._wait_enabled(confirm_otp, timeout_ms=5_000)
             await confirm_otp.click(timeout=8_000)
             await page.wait_for_timeout(1_000)
 
