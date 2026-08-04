@@ -45,6 +45,7 @@ class StartIn(BaseModel):
     target: TargetIn
     payments: list[PaymentIn] = Field(..., min_length=1, max_length=8)
     allow_duplicate_identity: bool = False
+    fast: bool = False
 
 
 class ApiProbeIn(BaseModel):
@@ -261,6 +262,7 @@ async def group_start(body: StartIn, request: Request):
             body.target.model_dump(),
             [payment.model_dump() for payment in body.payments],
             allow_duplicate_identity=body.allow_duplicate_identity,
+            fast=body.fast,
         )
     except GroupPlanError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

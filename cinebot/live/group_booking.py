@@ -73,6 +73,7 @@ class PaymentSession:
     otp_required: bool = False
     pin_required: bool = False
     error: Optional[str] = None
+    ssl_url: Optional[str] = None
     events: list = field(default_factory=list)
     _otp_future: Optional[asyncio.Future] = field(default=None, repr=False)
 
@@ -233,6 +234,7 @@ class GroupBookingManager:
         payment_payloads: list[dict[str, Any]],
         *,
         allow_duplicate_identity: bool = False,
+        fast: bool = False,
     ) -> str:
         if self.busy:
             raise GroupPlanError("A group booking is already running.")
@@ -257,7 +259,8 @@ class GroupBookingManager:
         self._park_event = asyncio.Event()
         self._booking_lock = asyncio.Lock()
         run_id = f"group_{uuid.uuid4().hex[:10]}"
-        self._task = asyncio.create_task(self._run(run_id, target, payments), name=run_id)
+        runner = self._run_fast if fast else self._run
+        self._task = asyncio.create_task(runner(run_id, target, payments), name=run_id)
         return run_id
 
     async def stop(self) -> bool:
@@ -429,6 +432,174 @@ class GroupBookingManager:
             # Browser windows stay open so the user can complete manual payments.
             # Call close_browser() from the UI when done.
             self._task = None
+
+    async def _run_fast(self, run_id, target, payments):
+        """API-fast path: book + purchase over HTTP for every session (no seat
+        clicking), then open one browser per session straight at its SSL Commerz
+        payment URL for bKash OTP/PIN."""
+        from dataclasses import asdict
+        from playwright.async_api import async_playwright
+        from .api_booking import (
+            harvest_tokens,
+            build_booking_body,
+            post_booking,
+            post_purchase,
+        )
+
+        headless_flag = os.getenv("CINEBOT_HEADLESS", "true").lower() not in ("false", "0", "no")
+        try:
+            self.browser_open = True
+            self.status = "starting"
+            self.phase = "API booking"
+            self.detail = "Verifying seats and harvesting reCAPTCHA tokens..."
+            log.info(f"Fast run {run_id}: verifying seats (one browser)...")
+            async with async_playwright() as pw:
+                try:
+                    browser = await pw.chromium.launch(channel="chrome", headless=headless_flag)
+                except Exception:
+                    browser = await pw.chromium.launch(headless=headless_flag)
+                target, chunks = await self._verify_target_and_seats(browser, target, payments)
+
+            self.show = {
+                "movie": target.movie_title,
+                "date": target.show_date,
+                "location": target.location_name,
+                "hall": target.hall_name,
+                "time": display_show_time(target.show_time),
+                "program_id": target.program_id,
+                "seat_type": target.seat_type_name,
+                "seat_count": sum(len(c.seats) for c in chunks),
+                "payments": len(chunks),
+                "unit_price": target.unit_price,
+            }
+            for request, chunk in zip(payments, chunks):
+                session_id = f"pay_{request.index}_{uuid.uuid4().hex[:6]}"
+                self.sessions[session_id] = PaymentSession(
+                    id=session_id,
+                    index=request.index,
+                    name=request.name,
+                    phone=request.bkash,
+                    chunk=chunk,
+                    amount=target.unit_price * len(chunk.seats),
+                )
+
+            self.detail = f"Minting {len(payments)} reCAPTCHA tokens..."
+            log.info(f"Fast run {run_id}: harvesting {len(payments)} tokens...")
+            device_key, jwt, tokens = await harvest_tokens(len(payments), headless=headless_flag)
+
+            target_dict = asdict(target)
+            sessions = sorted(self.sessions.values(), key=lambda s: s.index)
+            self._booking_lock = asyncio.Lock()
+            for session, token in zip(sessions, tokens):
+                payment_dict = {
+                    "name": session.name,
+                    "bkash_number": session.phone,
+                    "seats": list(session.chunk.labels),
+                }
+                self._set_session(session, "booking", "Creating the Cineplex booking (API)...")
+                async with self._booking_lock:
+                    body = build_booking_body(
+                        target_dict, payment_dict, list(session.chunk.seat_ids)
+                    )
+                    bresp = await asyncio.to_thread(post_booking, device_key, jwt, token, body)
+                    bbody = bresp.get("body") or {}
+                    log.info(
+                        f"[Session {session.index}] API /booking http={bresp.get('http_status')} "
+                        f"code={bbody.get('code')}"
+                    )
+                    self._event(
+                        session, f"/booking http={bresp.get('http_status')} code={bbody.get('code')}"
+                    )
+                    if bresp.get("http_status") != 200 or bbody.get("code") != 200:
+                        raise GroupPlanError(f"API booking rejected: {bbody}")
+                    booking_id = str((bbody.get("data") or {}).get("booking_id") or "")
+                    presp = await asyncio.to_thread(post_purchase, device_key, jwt, booking_id)
+                    purl = (((presp.get("body") or {}).get("data") or {}).get("url"))
+                    log.info(
+                        f"[Session {session.index}] API /purchase http={presp.get('http_status')} url={purl}"
+                    )
+                    if not purl:
+                        raise GroupPlanError(f"API purchase did not return a gateway URL: {presp.get('body')}")
+                    session.ssl_url = purl
+                    self._event(session, "Booking created (API); ready to pay")
+                    await asyncio.sleep(0.6)
+
+            self.status = "running"
+            self.phase = f"Paying {len(sessions)} session(s)"
+            self.detail = "Opening each SSL Commerz link for bKash OTP/PIN."
+            log.info(f"Fast run {run_id}: opening payment browsers...")
+            async with async_playwright() as pw:
+                try:
+                    self._browser = await pw.chromium.launch(channel="chrome", headless=headless_flag)
+                except Exception:
+                    self._browser = await pw.chromium.launch(headless=headless_flag)
+                results = await asyncio.gather(
+                    *(self._run_fast_payment_session(self._browser, s) for s in sessions),
+                    return_exceptions=True,
+                )
+                for session, result in zip(sessions, results):
+                    if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
+                        log.error(f"[Session {session.index}] task error: {result}")
+                        self._fail_session(session, str(result))
+                failed = [s for s in sessions if s.error]
+                completed = [s for s in sessions if s.status == "completed"]
+                if failed:
+                    self.status = "error"
+                    self.phase = "Needs attention"
+                    self.detail = f"{len(failed)} payment session(s) failed."
+                    self.error = "; ".join(f"{s.name}: {s.error}" for s in failed)
+                elif len(completed) == len(sessions):
+                    self.status = "completed"
+                    self.phase = "Booking complete"
+                    self.detail = "All payment sessions returned successfully."
+                else:
+                    self.status = "attention"
+                    self.phase = "Finish in bKash"
+                    self.detail = "Complete the remaining secure PIN confirmations."
+                self._park_event = asyncio.Event()
+                try:
+                    await self._park_event.wait()
+                except asyncio.CancelledError:
+                    raise
+        except asyncio.CancelledError:
+            self.status = "stopped"
+            self.phase = "Stopped"
+            self.detail = "The fast booking run was stopped."
+            for s in self.sessions.values():
+                if s.status not in {"completed", "failed"}:
+                    s.status = "stopped"
+                    s.detail = "Stopped"
+            raise
+        except Exception as exc:
+            log.exception("fast run %s failed", run_id)
+            self.status = "error"
+            self.phase = "Could not start"
+            self.detail = str(exc)
+            self.error = str(exc)
+        finally:
+            self._task = None
+
+    async def _run_fast_payment_session(self, browser, session):
+        """Open the pre-booked SSL Commerz link and drive bKash OTP/PIN."""
+        context = await browser.new_context(
+            user_agent=_UA, viewport={"width": 1320, "height": 900}
+        )
+        self._contexts.append(context)
+        page = await context.new_page()
+        try:
+            await stealth_async(page)
+            self._set_session(session, "gateway", "Opening the SSL Commerz payment link...")
+            log.info(f"[Session {session.index}] goto {session.ssl_url}")
+            await page.goto(session.ssl_url, wait_until="domcontentloaded", timeout=60_000)
+            await self._drive_ssl_payment(page, session)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.error(f"[Session {session.index}] FAILED: {exc}", exc_info=True)
+            self._fail_session(session, str(exc))
+        finally:
+            if session._otp_future is not None and not session._otp_future.done():
+                session._otp_future.cancel()
 
     async def _verify_target_and_seats(
         self,
@@ -780,116 +951,7 @@ class GroupBookingManager:
 
             log.info(f"[Session {session.index}] Booking created. Proceeding to payment gateway...")
             self._event(session, "Booking created")
-            self._set_session(session, "gateway", "Opening secure bKash payment...")
-            mobile = page.get_by_text(
-                re.compile(r"MOBILE BANKING", re.I), exact=False
-            ).first
-            await mobile.wait_for(state="visible", timeout=45_000)
-            await mobile.click()
-            bkash_option = page.locator(
-                "img[src*='bkash' i], [alt*='bkash' i], [class*='bkash' i], "
-                "[style*='bkash' i]"
-            ).first
-            try:
-                await bkash_option.wait_for(state="visible", timeout=12_000)
-                await bkash_option.click()
-            except Exception:
-                await page.get_by_text(re.compile(r"\bbKash\b", re.I)).first.click(
-                    timeout=5_000
-                )
-
-            log.info(f"[Session {session.index}] Filling wallet number: {session.phone}")
-            wallet = page.locator(
-                'input[name="WALLET"], input[name*="WALLET"], '
-                'input[placeholder*="01X"], input[type="tel"]'
-            ).first
-            await wallet.wait_for(state="visible", timeout=20_000)
-            await wallet.fill(session.phone)
-            body_text = await page.locator("body").inner_text()
-            invoice_match = re.search(r"Inv\s*No:\s*([A-Z0-9-]+)", body_text, re.I)
-            if invoice_match:
-                session.invoice = invoice_match.group(1)
-            confirm = page.locator(
-                "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
-                "a:has-text('Confirm')"
-            ).last
-            log.info(f"[Session {session.index}] Clicking bKash Confirm button...")
-            await confirm.click(timeout=8_000)
-            self._event(session, "bKash wallet submitted; waiting for OTP")
-
-            otp_input = page.locator(
-                "input[placeholder*='6 digit' i], input[placeholder*='code' i], "
-                "input[name*='otp' i], input[id*='otp' i], input[type='password'], input[type='text']"
-            ).first
-            await otp_input.wait_for(state="visible", timeout=25_000)
-
-            # Request OTP from UI modal and fill it into bKash
-            log.info(f"[Session {session.index}] Reached bKash OTP prompt. Requesting OTP from web UI...")
-            otp_code = await self._request_otp(
-                session, "Enter the 6-digit OTP code sent via bKash SMS."
-            )
-            log.info(f"[Session {session.index}] Submitting OTP to bKash...")
-            # Type digit-by-digit: bKash enables Confirm reactively once the
-            # masked input sees 6 real keystrokes, so plain fill() leaves the
-            # button disabled and the click times out.
-            # OTP + PIN are best-effort. Type them and click Confirm; if bKash's
-            # reactive Confirm button refuses to enable (masked/boxed input
-            # quirks), PARK the session so the human finishes in the browser
-            # window and _wait_for_payment_result still detects the success.
-            try:
-                await otp_input.click()
-                await otp_input.fill("")
-                await page.keyboard.type(otp_code, delay=60)
-                confirm_otp = page.locator(
-                    "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
-                    "a:has-text('Confirm'), button:has-text('Submit'), button:has-text('Verify')"
-                ).last
-                try:
-                    await self._wait_enabled(confirm_otp, timeout_ms=6_000)
-                except Exception:
-                    await otp_input.click()
-                    await otp_input.evaluate("el => { el.value = ''; }")
-                    for ch in otp_code:
-                        await page.keyboard.press(ch)
-                    await self._wait_enabled(confirm_otp, timeout_ms=5_000)
-                await confirm_otp.click(timeout=8_000)
-                await page.wait_for_timeout(1_000)
-
-                pin_input = page.locator(
-                    "input[placeholder*='PIN' i], input[name*='pin' i], input[id*='pin' i], input[type='password']"
-                ).first
-                try:
-                    await pin_input.wait_for(state="visible", timeout=15_000)
-                    log.info(f"[Session {session.index}] Reached bKash PIN prompt. Requesting PIN from web UI...")
-                    session.pin_required = True
-                    pin_code = await self._request_otp(
-                        session, "Enter your 5-digit bKash account PIN."
-                    )
-                    log.info(f"[Session {session.index}] Submitting PIN to bKash...")
-                    await pin_input.click()
-                    await pin_input.fill(pin_code)
-                    confirm_pin = page.locator(
-                        "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
-                        "a:has-text('Confirm'), button:has-text('Submit')"
-                    ).last
-                    await self._wait_enabled(confirm_pin, timeout_ms=6_000)
-                    await confirm_pin.click(timeout=8_000)
-                except Exception as e:
-                    log.info(f"[Session {session.index}] PIN step skipped/failed: {e}")
-                finally:
-                    session.pin_required = False
-            except Exception as exc:
-                log.warning(
-                    f"[Session {session.index}] OTP/PIN auto-fill did not complete "
-                    f"({exc}); parking for manual completion in the browser window."
-                )
-                self._event(session, f"OTP/PIN auto-fill stalled: {exc}")
-                self._set_session(
-                    session, "manual_otp",
-                    "Enter OTP/PIN manually in the browser window.",
-                )
-
-            await self._wait_for_payment_result(page, session)
+            await self._drive_ssl_payment(page, session)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -902,6 +964,115 @@ class GroupBookingManager:
                 session._otp_future.cancel()
             # Intentionally do NOT close the context — leave the window open
             # for manual OTP + PIN.
+
+    async def _drive_ssl_payment(self, page, session: PaymentSession) -> None:
+        """Drive SSL Commerz -> bKash payment. The page must already be on the
+        SSL Commerz gateway (redirected after a Cineplex Purchase, or after
+        goto(purchase_url) in the fast path). OTP + PIN are best-effort: if the
+        bKash Confirm button won't enable, park for manual completion and keep
+        watching for the user's success."""
+        self._set_session(session, "gateway", "Opening secure bKash payment...")
+        mobile = page.get_by_text(
+            re.compile(r"MOBILE BANKING", re.I), exact=False
+        ).first
+        await mobile.wait_for(state="visible", timeout=45_000)
+        await mobile.click()
+        bkash_option = page.locator(
+            "img[src*='bkash' i], [alt*='bkash' i], [class*='bkash' i], "
+            "[style*='bkash' i]"
+        ).first
+        try:
+            await bkash_option.wait_for(state="visible", timeout=12_000)
+            await bkash_option.click()
+        except Exception:
+            await page.get_by_text(re.compile(r"\bbKash\b", re.I)).first.click(
+                timeout=5_000
+            )
+
+        log.info(f"[Session {session.index}] Filling wallet number: {session.phone}")
+        wallet = page.locator(
+            'input[name="WALLET"], input[name*="WALLET"], '
+            'input[placeholder*="01X"], input[type="tel"]'
+        ).first
+        await wallet.wait_for(state="visible", timeout=20_000)
+        await wallet.fill(session.phone)
+        body_text = await page.locator("body").inner_text()
+        invoice_match = re.search(r"Inv\s*No:\s*([A-Z0-9-]+)", body_text, re.I)
+        if invoice_match:
+            session.invoice = invoice_match.group(1)
+        confirm = page.locator(
+            "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
+            "a:has-text('Confirm')"
+        ).last
+        log.info(f"[Session {session.index}] Clicking bKash Confirm button...")
+        await confirm.click(timeout=8_000)
+        self._event(session, "bKash wallet submitted; waiting for OTP")
+
+        otp_input = page.locator(
+            "input[placeholder*='6 digit' i], input[placeholder*='code' i], "
+            "input[name*='otp' i], input[id*='otp' i], input[type='password'], input[type='text']"
+        ).first
+        await otp_input.wait_for(state="visible", timeout=25_000)
+
+        log.info(f"[Session {session.index}] Reached bKash OTP prompt. Requesting OTP from web UI...")
+        otp_code = await self._request_otp(
+            session, "Enter the 6-digit OTP code sent via bKash SMS."
+        )
+        log.info(f"[Session {session.index}] Submitting OTP to bKash...")
+        try:
+            await otp_input.click()
+            await otp_input.fill("")
+            await page.keyboard.type(otp_code, delay=60)
+            confirm_otp = page.locator(
+                "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
+                "a:has-text('Confirm'), button:has-text('Submit'), button:has-text('Verify')"
+            ).last
+            try:
+                await self._wait_enabled(confirm_otp, timeout_ms=6_000)
+            except Exception:
+                await otp_input.click()
+                await otp_input.evaluate("el => { el.value = ''; }")
+                for ch in otp_code:
+                    await page.keyboard.press(ch)
+                await self._wait_enabled(confirm_otp, timeout_ms=5_000)
+            await confirm_otp.click(timeout=8_000)
+            await page.wait_for_timeout(1_000)
+
+            pin_input = page.locator(
+                "input[placeholder*='PIN' i], input[name*='pin' i], input[id*='pin' i], input[type='password']"
+            ).first
+            try:
+                await pin_input.wait_for(state="visible", timeout=15_000)
+                log.info(f"[Session {session.index}] Reached bKash PIN prompt. Requesting PIN from web UI...")
+                session.pin_required = True
+                pin_code = await self._request_otp(
+                    session, "Enter your 5-digit bKash account PIN."
+                )
+                log.info(f"[Session {session.index}] Submitting PIN to bKash...")
+                await pin_input.click()
+                await pin_input.fill(pin_code)
+                confirm_pin = page.locator(
+                    "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
+                    "a:has-text('Confirm'), button:has-text('Submit')"
+                ).last
+                await self._wait_enabled(confirm_pin, timeout_ms=6_000)
+                await confirm_pin.click(timeout=8_000)
+            except Exception as e:
+                log.info(f"[Session {session.index}] PIN step skipped/failed: {e}")
+            finally:
+                session.pin_required = False
+        except Exception as exc:
+            log.warning(
+                f"[Session {session.index}] OTP/PIN auto-fill did not complete "
+                f"({exc}); parking for manual completion in the browser window."
+            )
+            self._event(session, f"OTP/PIN auto-fill stalled: {exc}")
+            self._set_session(
+                session, "manual_otp",
+                "Enter OTP/PIN manually in the browser window.",
+            )
+
+        await self._wait_for_payment_result(page, session)
 
     async def _wait_for_group_release(self, session: PaymentSession) -> None:
         assert self._ready_event is not None

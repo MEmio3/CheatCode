@@ -28,6 +28,54 @@ log = logging.getLogger("cinebot.live.api")
 SITE_KEY = "6LchFI8qAAAAAO1tzM3d1sI2TFOzmRmd55G0BoX8"
 
 
+async def harvest_tokens(n: int, headless: bool = False) -> tuple[str, str, list[str]]:
+    """Guest-login once, then mint N single-use reCAPTCHA tokens in the same
+    browser session. Returns (device_key, jwt, [tokens])."""
+    from playwright.async_api import async_playwright
+
+    n = max(1, n)
+    async with async_playwright() as pw:
+        try:
+            browser = await pw.chromium.launch(channel="chrome", headless=headless)
+        except Exception:
+            browser = await pw.chromium.launch(headless=headless)
+        ctx = await browser.new_context(
+            user_agent=_UA, viewport={"width": 1280, "height": 850}
+        )
+        page = await ctx.new_page()
+        try:
+            await page.goto(ORIGIN, wait_until="domcontentloaded", timeout=30_000)
+            button = page.get_by_role("button", name="Guest Login", exact=True)
+            await button.wait_for(state="visible", timeout=15_000)
+            async with page.expect_response(
+                lambda r: "/api/v1/guest-login" in r.url, timeout=30_000
+            ) as ri:
+                await button.click()
+            resp = await ri.value
+            payload = await resp.json()
+            token = str((payload.get("data") or {}).get("token") or "")
+            device_key = str(resp.request.headers.get("device-key") or "")
+            if not token or not device_key:
+                raise RuntimeError("guest login did not return token + device-key")
+            tokens: list[str] = []
+            for _ in range(n):
+                tk = await page.evaluate(
+                    """async (siteKey) => {
+                        await new Promise(r => grecaptcha.ready(r));
+                        return await grecaptcha.execute(siteKey, {action: 'booking'});
+                    }""",
+                    SITE_KEY,
+                )
+                if tk:
+                    tokens.append(str(tk))
+            if not tokens:
+                raise RuntimeError("could not mint any reCAPTCHA tokens")
+            return device_key, token, tokens
+        finally:
+            await ctx.close()
+            await browser.close()
+
+
 async def harvest_session(headless: bool = False) -> tuple[str, str, str]:
     """Open a browser, click Guest Login, then mint a reCAPTCHA token.
 

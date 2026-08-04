@@ -468,7 +468,7 @@ async function startRun() {
   $("form-error").textContent = "";
   let body;
   try {
-    body = { target: buildTarget(), payments: readPayments(), allow_duplicate_identity: $("allow-duplicate-identity").checked };
+    body = { target: buildTarget(), payments: readPayments(), allow_duplicate_identity: $("allow-duplicate-identity").checked, fast: Boolean($("fast-toggle")?.checked) };
   } catch (error) {
     $("form-error").textContent = error.message;
     return;
