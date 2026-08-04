@@ -435,6 +435,35 @@ function openOrderPopup() {
   } catch { orderPopup = null; }
 }
 
+async function apiTest() {
+  $("form-error").textContent = "";
+  let target, payment;
+  try {
+    target = buildTarget();
+    payment = readPayments()[0];
+  } catch (e) {
+    $("form-error").textContent = e.message;
+    return;
+  }
+  const btn = $("api-test-button");
+  btn.disabled = true;
+  $("form-error").textContent = "Running API booking probe — opens a browser, ~15s...";
+  try {
+    const res = await api("/api/group/api-probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, payment }),
+    });
+    console.log("API booking probe result:", res);
+    $("form-error").textContent =
+      `API probe → ok=${res.ok}, stage=${res.stage}, http=${res.response?.http_status}, code=${res.response?.body?.code}. Full result in console (F12).`;
+  } catch (e) {
+    $("form-error").textContent = "API probe failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function startRun() {
   $("form-error").textContent = "";
   let body;
@@ -919,6 +948,7 @@ selects.show.addEventListener("change", onShowChange);
 selects.seatClass.addEventListener("change", onClassChange);
 $("reload-catalog").addEventListener("click", loadLocations);
 $("start-button").addEventListener("click", startRun);
+if ($("api-test-button")) $("api-test-button").addEventListener("click", apiTest);
 $("stop-button").addEventListener("click", stopRun);
 if ($("close-browser-button")) $("close-browser-button").addEventListener("click", closeBrowser);
 $("otp-submit").addEventListener("click", submitOtp);
