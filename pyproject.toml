@@ -7,6 +7,7 @@ readme = "README.md"
 dependencies = [
     "curl-cffi>=0.7",
     "playwright>=1.45",
+    "playwright-stealth>=1.0.6",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "sse-starlette>=2.1",

@@ -19,7 +19,10 @@
     <section class="picker-card">
       <div class="section-head">
         <div><span class="step">01</span><h2>Live show picker</h2></div>
-        <button id="reload-catalog" class="quiet-button" type="button">Reload schedule</button>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button id="headless-toggle" class="quiet-button" type="button" title="Toggle between headless background mode and visible Chrome windows">Browser Mode: Headless 👻</button>
+          <button id="reload-catalog" class="quiet-button" type="button">Reload schedule</button>
+        </div>
       </div>
       <div id="catalog-status" class="inline-status loading" role="status">
         Connecting to the public Cineplex schedule...
@@ -140,13 +143,13 @@
       <button id="otp-close" class="modal-close" type="button" aria-label="Close OTP dialog">&times;</button>
       <span id="otp-position" class="otp-position">Payment 1</span>
       <h2 id="otp-title">bKash OTP</h2>
-      <p>Use the SMS sent to the exact number shown below.</p>
+      <p id="otp-intro">Use the SMS sent to the exact number shown below.</p>
       <div class="otp-identity"><div><span>Attendee</span><strong id="otp-name">-</strong></div><div><span>bKash number</span><strong id="otp-phone">-</strong></div></div>
       <div class="otp-order"><div><span>Seats</span><strong id="otp-seats">-</strong></div><div><span>Amount</span><strong id="otp-amount">-</strong></div><div><span>Invoice</span><strong id="otp-invoice">Pending</strong></div></div>
-      <label class="otp-field"><span>Verification code</span><input id="otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Enter OTP" /></label>
+      <label class="otp-field"><span id="otp-label">Verification code</span><input id="otp-code" type="password" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Enter OTP" /></label>
       <div id="otp-error" class="inline-error" role="alert"></div>
-      <button id="otp-submit" class="primary-button" type="button"><span>Submit OTP</span><span>&rarr;</span></button>
-      <p class="pin-reminder">Next, enter the PIN only in the matching secure bKash browser window.</p>
+      <button id="otp-submit" class="primary-button" type="button"><span id="otp-submit-text">Submit OTP</span><span>&rarr;</span></button>
+      <p id="otp-reminder" class="pin-reminder">Enter the code or PIN to authorize this payment session.</p>
     </section>
   </div>
 

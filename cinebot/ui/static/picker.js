@@ -555,12 +555,29 @@ function openOtp(sessionId) {
 }
 
 function fillOtpModal(session) {
+  const isPin = (session.detail || "").toLowerCase().includes("pin") || session.pin_required;
   $("otp-position").textContent = `Payment ${session.index} of ${runState.sessions.length}`;
   $("otp-name").textContent = session.name;
   $("otp-phone").textContent = session.phone;
   $("otp-seats").textContent = session.seats.join(", ");
   $("otp-amount").textContent = session.amount == null ? "Pending" : `BDT ${Number(session.amount).toLocaleString("en-BD")}`;
   $("otp-invoice").textContent = session.invoice || "Pending";
+
+  if (isPin) {
+    if ($("otp-title")) $("otp-title").textContent = "bKash Account PIN";
+    if ($("otp-intro")) $("otp-intro").textContent = session.detail || "Enter your 5-digit bKash PIN to authorize payment.";
+    if ($("otp-label")) $("otp-label").textContent = "Account PIN";
+    if ($("otp-code")) $("otp-code").placeholder = "Enter PIN";
+    if ($("otp-submit-text")) $("otp-submit-text").textContent = "Authorize & Pay";
+    if ($("otp-reminder")) $("otp-reminder").textContent = "Your PIN is submitted securely directly to the bKash payment gateway.";
+  } else {
+    if ($("otp-title")) $("otp-title").textContent = "bKash OTP";
+    if ($("otp-intro")) $("otp-intro").textContent = session.detail || "Use the SMS code sent to the exact number shown below.";
+    if ($("otp-label")) $("otp-label").textContent = "Verification code";
+    if ($("otp-code")) $("otp-code").placeholder = "Enter OTP";
+    if ($("otp-submit-text")) $("otp-submit-text").textContent = "Submit OTP";
+    if ($("otp-reminder")) $("otp-reminder").textContent = "After OTP confirmation, you will be prompted for your bKash PIN.";
+  }
 }
 
 function closeOtp() {
@@ -900,13 +917,61 @@ $("otp-code").addEventListener("keydown", (event) => {
 $("snipe-total").addEventListener("input", () => { clampPaymentCount(); applyPaymentCount(); clampSnipePayCount(); renderSnipeAttendees(snipePayCount()); });
 $("payment-count").addEventListener("input", () => { clampPaymentCount(); applyPaymentCount(); });
 $("snipe-pay-count").addEventListener("input", () => { clampSnipePayCount(); renderSnipeAttendees(snipePayCount()); });
+let currentHeadlessMode = true;
+
+async function initHeadlessToggle() {
+  try {
+    const data = await api("/api/settings/headless");
+    currentHeadlessMode = !!data.headless;
+    updateHeadlessButtonUI();
+  } catch (err) {
+    console.warn("Could not fetch headless setting", err);
+  }
+}
+
+function updateHeadlessButtonUI() {
+  const btn = $("headless-toggle");
+  if (!btn) return;
+  if (currentHeadlessMode) {
+    btn.textContent = "Browser Mode: Headless 👻";
+    btn.title = "Chrome runs silently in the background. Click to switch to visible windows.";
+    btn.style.borderColor = "rgba(179,99,241,.5)";
+    btn.style.color = "#dfcefc";
+  } else {
+    btn.textContent = "Browser Mode: Visible 🖥️";
+    btn.title = "Chrome opens visible windows on screen. Click to switch to background mode.";
+    btn.style.borderColor = "rgba(255,160,0,.6)";
+    btn.style.color = "#ffd580";
+  }
+}
+
+async function toggleHeadlessMode() {
+  const btn = $("headless-toggle");
+  if (btn) btn.disabled = true;
+  try {
+    const nextMode = !currentHeadlessMode;
+    const data = await api("/api/settings/headless", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ headless: nextMode }),
+    });
+    currentHeadlessMode = !!data.headless;
+    updateHeadlessButtonUI();
+  } catch (err) {
+    alert("Could not update headless setting: " + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+if ($("headless-toggle")) $("headless-toggle").addEventListener("click", toggleHeadlessMode);
 $("snipe-save").addEventListener("click", snipeSave);
 $("telegram-save").addEventListener("click", saveTelegramConfig);
 $("snipe-start").addEventListener("click", snipeStart);
 $("snipe-stop").addEventListener("click", snipeStop);
 $("snipe-test").addEventListener("click", snipeTest);
 
-Promise.all([api("/api/group/config"), refreshState(), api("/api/snipe/state")]).then(([loadedConfig, , snipe]) => {
+Promise.all([api("/api/group/config"), refreshState(), api("/api/snipe/state"), initHeadlessToggle()]).then(([loadedConfig, , snipe]) => {
   config = loadedConfig;
   applyPaymentCount();
   clampSnipePayCount();
