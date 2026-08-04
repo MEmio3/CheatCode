@@ -832,46 +832,62 @@ class GroupBookingManager:
             # Type digit-by-digit: bKash enables Confirm reactively once the
             # masked input sees 6 real keystrokes, so plain fill() leaves the
             # button disabled and the click times out.
-            await otp_input.click()
-            await otp_input.fill("")
-            await page.keyboard.type(otp_code, delay=60)
-            confirm_otp = page.locator(
-                "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
-                "a:has-text('Confirm'), button:has-text('Submit'), button:has-text('Verify')"
-            ).last
+            # OTP + PIN are best-effort. Type them and click Confirm; if bKash's
+            # reactive Confirm button refuses to enable (masked/boxed input
+            # quirks), PARK the session so the human finishes in the browser
+            # window and _wait_for_payment_result still detects the success.
             try:
-                await self._wait_enabled(confirm_otp, timeout_ms=6_000)
-            except Exception:
                 await otp_input.click()
-                await otp_input.evaluate("el => { el.value = ''; }")
-                for ch in otp_code:
-                    await page.keyboard.press(ch)
-                await self._wait_enabled(confirm_otp, timeout_ms=5_000)
-            await confirm_otp.click(timeout=8_000)
-            await page.wait_for_timeout(1_000)
-
-            # Wait for PIN prompt or payment result page
-            pin_input = page.locator(
-                "input[placeholder*='PIN' i], input[name*='pin' i], input[id*='pin' i], input[type='password']"
-            ).first
-            try:
-                await pin_input.wait_for(state="visible", timeout=15_000)
-                log.info(f"[Session {session.index}] Reached bKash PIN prompt. Requesting PIN from web UI...")
-                session.pin_required = True
-                pin_code = await self._request_otp(
-                    session, "Enter your 5-digit bKash account PIN."
-                )
-                log.info(f"[Session {session.index}] Submitting PIN to bKash...")
-                await pin_input.fill(pin_code)
-                confirm_pin = page.locator(
+                await otp_input.fill("")
+                await page.keyboard.type(otp_code, delay=60)
+                confirm_otp = page.locator(
                     "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
-                    "a:has-text('Confirm'), button:has-text('Submit')"
+                    "a:has-text('Confirm'), button:has-text('Submit'), button:has-text('Verify')"
                 ).last
-                await confirm_pin.click(timeout=8_000)
-            except Exception as e:
-                log.info(f"[Session {session.index}] PIN input step check: {e}")
-            finally:
-                session.pin_required = False
+                try:
+                    await self._wait_enabled(confirm_otp, timeout_ms=6_000)
+                except Exception:
+                    await otp_input.click()
+                    await otp_input.evaluate("el => { el.value = ''; }")
+                    for ch in otp_code:
+                        await page.keyboard.press(ch)
+                    await self._wait_enabled(confirm_otp, timeout_ms=5_000)
+                await confirm_otp.click(timeout=8_000)
+                await page.wait_for_timeout(1_000)
+
+                pin_input = page.locator(
+                    "input[placeholder*='PIN' i], input[name*='pin' i], input[id*='pin' i], input[type='password']"
+                ).first
+                try:
+                    await pin_input.wait_for(state="visible", timeout=15_000)
+                    log.info(f"[Session {session.index}] Reached bKash PIN prompt. Requesting PIN from web UI...")
+                    session.pin_required = True
+                    pin_code = await self._request_otp(
+                        session, "Enter your 5-digit bKash account PIN."
+                    )
+                    log.info(f"[Session {session.index}] Submitting PIN to bKash...")
+                    await pin_input.click()
+                    await pin_input.fill(pin_code)
+                    confirm_pin = page.locator(
+                        "button:has-text('Confirm'), [role=button]:has-text('Confirm'), "
+                        "a:has-text('Confirm'), button:has-text('Submit')"
+                    ).last
+                    await self._wait_enabled(confirm_pin, timeout_ms=6_000)
+                    await confirm_pin.click(timeout=8_000)
+                except Exception as e:
+                    log.info(f"[Session {session.index}] PIN step skipped/failed: {e}")
+                finally:
+                    session.pin_required = False
+            except Exception as exc:
+                log.warning(
+                    f"[Session {session.index}] OTP/PIN auto-fill did not complete "
+                    f"({exc}); parking for manual completion in the browser window."
+                )
+                self._event(session, f"OTP/PIN auto-fill stalled: {exc}")
+                self._set_session(
+                    session, "manual_otp",
+                    "Enter OTP/PIN manually in the browser window.",
+                )
 
             await self._wait_for_payment_result(page, session)
         except asyncio.CancelledError:
