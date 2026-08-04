@@ -579,6 +579,17 @@ class GroupBookingManager:
         self._contexts.append(context)
         page = await context.new_page()
         await stealth_async(page)
+        if session.index == 1:
+            # Capture the payment handoff chain (purchase/ssl/gateway) so the
+            # direct-API migration can be mapped from a real run.
+            def _capture(resp):
+                try:
+                    u = resp.url
+                    if any(s in u for s in ("purchase", "/ssl", "sslcommerz", "gateway", "bkash")):
+                        log.info(f"[Session 1 capture] {resp.status} {u}")
+                except Exception:
+                    pass
+            page.on("response", _capture)
         try:
             await self._show_window_label(page, session, "Opening")
             stagger = max(0, session.index - 1) * 2
@@ -729,6 +740,11 @@ class GroupBookingManager:
                         f"[Session {session.index}] /booking -> HTTP {booking_response.status}; "
                         f"code={booking_payload.get('code')}; sent={post_data}"
                     )
+                    if session.index == 1:
+                        log.info(
+                            f"[Session 1 capture] /booking response body: "
+                            f"{str(booking_payload)[:1000]}"
+                        )
                     self._event(
                         session,
                         f"/booking HTTP {booking_response.status} (try {attempt}/{max_attempts})",
