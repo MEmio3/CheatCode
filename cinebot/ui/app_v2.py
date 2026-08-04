@@ -348,6 +348,15 @@ async def snipe_test(body: SnipeConfigIn, request: Request):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+class _QuietPollFilter(logging.Filter):
+    """Hide the high-frequency UI poll lines so real events stay readable."""
+
+    _NOISY = ("/api/group/state", "/api/snipe/state")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not any(p in record.getMessage() for p in self._NOISY)
+
+
 def main() -> None:
     import uvicorn
 
@@ -355,6 +364,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
     uvicorn.run("cinebot.ui.app_v2:app", host="127.0.0.1", port=8765, reload=False)
 
 

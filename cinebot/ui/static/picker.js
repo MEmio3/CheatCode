@@ -507,12 +507,22 @@ function renderRunState() {
   $("run-detail").textContent = runState.detail || "";
   const sessions = runState.sessions || [];
   if (sessions.length) {
-    $("session-list").innerHTML = sessions.map((session) => `
+    $("session-list").innerHTML = sessions.map((session) => {
+      const events = (session.events || [])
+        .slice(-8)
+        .map((ev) => `<li><time>${fmtEvTime(ev.t)}</time>${escapeHtml(ev.text || "")}</li>`)
+        .join("");
+      return `
       <article class="run-card ${escapeHtml(session.status)}">
         <b>${String(session.index).padStart(2, "0")}</b>
-        <div><strong>${escapeHtml(session.name)} / ${escapeHtml(session.phone_mask)}</strong><small>${escapeHtml(session.seats.join(", "))}</small></div>
-        <em>${escapeHtml(sessionStatus(session))}</em>
-      </article>`).join("");
+        <div>
+          <strong>${escapeHtml(session.name)} / ${escapeHtml(session.phone_mask)}</strong>
+          <small>${escapeHtml(session.seats.join(", "))}</small>
+          <em>${escapeHtml(sessionStatus(session))}</em>
+          ${events ? `<ul class="session-events">${events}</ul>` : ""}
+        </div>
+      </article>`;
+    }).join("");
   }
   const waiting = sessions.filter((session) => session.otp_required && session.status !== "manual_payment");
   if (waiting.length && !activeOtpSessionId) {
@@ -532,6 +542,11 @@ function renderRunState() {
   if (closeBrowserBtn) {
     closeBrowserBtn.hidden = !runState.browser_open;
   }
+}
+
+function fmtEvTime(t) {
+  if (!t) return "";
+  return new Date(t * 1000).toLocaleTimeString("en-GB", { hour12: false });
 }
 
 function sessionStatus(session) {

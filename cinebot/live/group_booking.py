@@ -73,6 +73,7 @@ class PaymentSession:
     otp_required: bool = False
     pin_required: bool = False
     error: Optional[str] = None
+    events: list = field(default_factory=list)
     _otp_future: Optional[asyncio.Future] = field(default=None, repr=False)
 
     def public(self) -> dict[str, Any]:
@@ -92,6 +93,7 @@ class PaymentSession:
             "otp_required": self.otp_required,
             "pin_required": self.pin_required,
             "error": self.error,
+            "events": list(self.events[-12:]),
         }
 
 
@@ -330,6 +332,11 @@ class GroupBookingManager:
 
             async with async_playwright() as pw:
                 headless_flag = os.getenv("CINEBOT_HEADLESS", "true").lower() not in ("false", "0", "no")
+                log.info(
+                    "Launching browser (headless=%s). If seat selection fails, "
+                    "switch Browser Mode to Visible and retry.",
+                    headless_flag,
+                )
                 try:
                     self._browser = await pw.chromium.launch(channel="chrome", headless=headless_flag)
                 except Exception:
@@ -374,6 +381,7 @@ class GroupBookingManager:
                     if isinstance(result, Exception) and not isinstance(
                         result, asyncio.CancelledError
                     ):
+                        log.error(f"[Session {session.index}] task error: {result}")
                         self._fail_session(session, str(result))
                 failed = [item for item in self.sessions.values() if item.error]
                 completed = [
@@ -631,6 +639,7 @@ class GroupBookingManager:
             log.info(f"[Session {session.index}] Attempting JS batch click for seats: {labels}")
             clicked_count = await self._batch_click_seats(page, labels)
             log.info(f"[Session {session.index}] JS batch clicked {clicked_count}/{len(labels)} seats.")
+            self._event(session, f"Seat batch-click {clicked_count}/{len(labels)}")
             
             # Verify and real-click anything the batch missed. The batch path
             # dispatches synthetic (untrusted) events, which the Cineplex SPA
@@ -651,6 +660,7 @@ class GroupBookingManager:
                         log.warning(f"[Session {session.index}] Real click on {label} failed: {exc}")
                     log.info(f"[Session {session.index}] Clicked {label} sequentially.")
                     await page.wait_for_timeout(80)
+                self._event(session, f"Real-clicked {len(missing)} seat(s)")
 
             # Final verification
             accepted = await self._read_selected_labels(page)
@@ -661,6 +671,7 @@ class GroupBookingManager:
                 raise GroupPlanError(err_msg)
 
             log.info(f"[Session {session.index}] Seats successfully selected: {accepted}")
+            self._event(session, "Seats confirmed")
 
             log.info(f"[Session {session.index}] Filling attendee details...")
             await page.fill("input[name=customer_name]", session.name)
@@ -718,6 +729,10 @@ class GroupBookingManager:
                         f"[Session {session.index}] /booking -> HTTP {booking_response.status}; "
                         f"code={booking_payload.get('code')}; sent={post_data}"
                     )
+                    self._event(
+                        session,
+                        f"/booking HTTP {booking_response.status} (try {attempt}/{max_attempts})",
+                    )
                     if booking_payload.get("code") == 200:
                         break
                     # Rejected (e.g. the "seat already booked" modal). Click the
@@ -748,6 +763,7 @@ class GroupBookingManager:
                 raise GroupPlanError(str(messages[0]))
 
             log.info(f"[Session {session.index}] Booking created. Proceeding to payment gateway...")
+            self._event(session, "Booking created")
             self._set_session(session, "gateway", "Opening secure bKash payment...")
             mobile = page.get_by_text(
                 re.compile(r"MOBILE BANKING", re.I), exact=False
@@ -783,6 +799,7 @@ class GroupBookingManager:
             ).last
             log.info(f"[Session {session.index}] Clicking bKash Confirm button...")
             await confirm.click(timeout=8_000)
+            self._event(session, "bKash wallet submitted; waiting for OTP")
 
             otp_input = page.locator(
                 "input[placeholder*='6 digit' i], input[placeholder*='code' i], "
@@ -831,6 +848,7 @@ class GroupBookingManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            log.error(f"[Session {session.index}] FAILED: {exc}", exc_info=True)
             if not self._purchases_released:
                 await self._release_after_failure()
             self._fail_session(session, str(exc))
@@ -1033,18 +1051,30 @@ class GroupBookingManager:
         data-seat-first order burned 5s per seat waiting on a selector that
         never exists on this site.
         """
+    async def _wait_for_seat(self, page, label: str, *, deadline_s: float = 20.0):
+        """Find a rendered seat despite Cineplex changing its seat DOM shape.
+
+        The seat map loads asynchronously, so a single 1.5s probe races the
+        render and fails every seat. Retry the selector cycle until an overall
+        deadline; try the live site's exact-text match first (the old
+        data-seat-first order burned 5s per seat on a selector that never
+        exists here).
+        """
         selectors = (
             page.get_by_text(label, exact=True).first,
             page.locator(f'a:has-text("{label}")').first,
             page.locator(f'[data-seat="{label}"]').first,
         )
+        deadline = time.monotonic() + deadline_s
         last_error: Exception | None = None
-        for locator in selectors:
-            try:
-                await locator.wait_for(state="visible", timeout=1_500)
-                return locator
-            except Exception as exc:
-                last_error = exc
+        while time.monotonic() < deadline:
+            for locator in selectors:
+                try:
+                    await locator.wait_for(state="visible", timeout=1_500)
+                    return locator
+                except Exception as exc:
+                    last_error = exc
+            await asyncio.sleep(0.3)  # seat map still rendering; retry
         raise GroupPlanError(
             f"Seat {label} is no longer visible in the live seat map; "
             "reload the show to refresh availability."
@@ -1060,6 +1090,11 @@ class GroupBookingManager:
         raise GroupPlanError("Cineplex did not enable Purchase in time.")
 
 
+    def _event(self, session: PaymentSession, text: str) -> None:
+        """Append a timestamped step to the session's visible event log."""
+        session.events.append({"t": round(time.time(), 1), "text": text})
+        del session.events[:-40]
+
     def _set_session(self, session: PaymentSession, status: str, detail: str) -> None:
         session.status = status
         session.detail = detail
@@ -1067,6 +1102,7 @@ class GroupBookingManager:
             session.otp_required = False
         if status not in {"pin_required", "manual_payment"}:
             session.pin_required = False
+        self._event(session, detail)
 
     def _fail_session(self, session: PaymentSession, detail: str) -> None:
         session.status = "failed"
@@ -1074,3 +1110,4 @@ class GroupBookingManager:
         session.error = detail
         session.otp_required = False
         session.pin_required = False
+        self._event(session, f"Failed: {detail}")
