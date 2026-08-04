@@ -317,6 +317,15 @@ async def group_api_probe(body: ApiProbeIn, request: Request):
         seat_seq_ids,
         headless=headless,
     )
+    resp = result.get("response") or {}
+    log.info(
+        "API probe result: ok=%s stage=%s http=%s code=%s body=%s",
+        result.get("ok"),
+        result.get("stage"),
+        resp.get("http_status"),
+        (resp.get("body") or {}).get("code"),
+        str(resp.get("body"))[:800],
+    )
     return result
 
 
