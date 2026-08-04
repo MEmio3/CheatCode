@@ -318,13 +318,17 @@ async def group_api_probe(body: ApiProbeIn, request: Request):
         headless=headless,
     )
     resp = result.get("response") or {}
+    purchase = result.get("purchase") or {}
     log.info(
-        "API probe result: ok=%s stage=%s http=%s code=%s body=%s",
+        "API probe result: ok=%s stage=%s booking http=%s code=%s | "
+        "purchase http=%s loc=%s body=%s",
         result.get("ok"),
         result.get("stage"),
         resp.get("http_status"),
         (resp.get("body") or {}).get("code"),
-        str(resp.get("body"))[:800],
+        purchase.get("http_status"),
+        purchase.get("location"),
+        str(purchase.get("body"))[:600],
     )
     return result
 

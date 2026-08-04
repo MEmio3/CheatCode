@@ -130,6 +130,28 @@ def post_booking(
     return {"http_status": r.status_code, "body": data}
 
 
+def post_purchase(device_key: str, jwt: str, booking_id: str) -> dict[str, Any]:
+    """POST /purchase via HTTP to capture the SSL Commerz handoff (the gateway
+    URL or a redirect Location). Returns http_status, body, and any Location."""
+    client = CineplexClient(device_key=device_key, token=jwt)
+    r = client.s.post(
+        f"{BASE}/purchase",
+        headers=client._headers(),
+        json={"booking_id": booking_id},
+        timeout=25,
+        allow_redirects=False,
+    )
+    try:
+        data = r.json()
+    except Exception:
+        data = {"raw": (r.text or "")[:1000]}
+    return {
+        "http_status": r.status_code,
+        "body": data,
+        "location": r.headers.get("location"),
+    }
+
+
 async def probe(
     target: dict[str, Any],
     payment: dict[str, Any],
@@ -150,7 +172,7 @@ async def probe(
             post_booking, device_key, jwt, recaptcha_token, body
         )
         ok = response.get("http_status") == 200 and response.get("body", {}).get("code") == 200
-        return {
+        result: dict[str, Any] = {
             "ok": ok,
             "stage": "booking",
             "request_body": body,
@@ -159,6 +181,20 @@ async def probe(
     except Exception as exc:
         log.warning("API booking POST failed: %s", exc)
         return {"ok": False, "stage": "booking", "error": str(exc)}
+
+    if ok:
+        booking_id = str(
+            ((response.get("body") or {}).get("data") or {}).get("booking_id") or ""
+        )
+        if booking_id:
+            try:
+                purchase = await asyncio.to_thread(
+                    post_purchase, device_key, jwt, booking_id
+                )
+                result["purchase"] = purchase
+            except Exception as exc:
+                result["purchase_error"] = str(exc)
+    return result
 
 
 def main() -> int:
