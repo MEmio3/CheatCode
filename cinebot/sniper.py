@@ -47,6 +47,7 @@ class SnipeConfig:
     target_movie: str = ""
     location_id: int = 0
     location_name: str = ""
+    all_locations: bool = False
     hall_ids: list[int] = field(default_factory=list)
     show_date: str = ""
     time_start: str = ""  # Empty means any show time.
@@ -66,6 +67,7 @@ class SnipeConfig:
             "target_movie": self.target_movie,
             "location_id": self.location_id,
             "location_name": self.location_name,
+            "all_locations": self.all_locations,
             "hall_ids": list(self.hall_ids),
             "show_date": self.show_date,
             "time_start": self.time_start,
@@ -87,6 +89,7 @@ class SnipeConfig:
             target_movie=str(d.get("target_movie") or ""),
             location_id=int(d.get("location_id") or 0),
             location_name=str(d.get("location_name") or ""),
+            all_locations=bool(d.get("all_locations", False)),
             hall_ids=[int(value) for value in (d.get("hall_ids") or ([d.get("hall_id")] if d.get("hall_id") else []))],
             show_date=str(d.get("show_date") or ""),
             time_start=str(d.get("time_start") or ""),
@@ -108,8 +111,8 @@ class SnipeConfig:
     def validate(self) -> None:
         if not self.target_movie.strip():
             raise GroupPlanError("Pick a target movie to watch for.")
-        if self.location_id <= 0:
-            raise GroupPlanError("A location is required.")
+        if not self.all_locations and self.location_id <= 0:
+            raise GroupPlanError("A location is required, or enable 'check all locations'.")
         try:
             date.fromisoformat(self.show_date)
         except ValueError as exc:
@@ -488,6 +491,34 @@ class SniperManager:
             "match": False, "target_movie": cfg.target_movie,
             "show_date": cfg.show_date, "location": cfg.location_name, "detail": "",
         }
+        if cfg.all_locations:
+            try:
+                locations = await self.catalog.locations()
+            except Exception as exc:
+                result["detail"] = f"Could not load locations: {exc}"
+                return result
+            search = [
+                {"id": int(loc.get("id") or 0), "title": str(loc.get("title") or "")}
+                for loc in locations
+                if int(loc.get("id") or 0) > 0
+            ]
+            for loc in search:
+                match = await self._find_match(cfg, loc["id"], loc["title"])
+                if match:
+                    chosen, _ = match
+                    result["match"] = True
+                    result["location"] = loc["title"]
+                    result["show"] = chosen
+                    result["detail"] = (
+                        f"MATCH at {loc['title']}: {chosen.get('hall')} "
+                        f"{chosen.get('time_label')} (program {chosen.get('program_id')})"
+                    )
+                    return result
+            result["detail"] = (
+                f"No match for '{cfg.target_movie}' on {cfg.show_date} across "
+                f"{len(search)} location(s)."
+            )
+            return result
         try:
             dates = await self.catalog.dates(cfg.location_id)
         except Exception as exc:
@@ -525,9 +556,10 @@ class SniperManager:
         save_config(config)
         _write_active()
         self.status = "watching"
+        where = "all locations" if config.all_locations else config.location_name
         self.detail = (
             f"Watching for '{config.target_movie}' on {config.show_date} at "
-            f"{config.location_name} "
+            f"{where} "
             f"(halls {', '.join(map(str, config.hall_ids)) or 'any'}, "
             f"times {config.time_start or 'any'}-{config.time_end or 'any'}); "
             f"{config.total_seats} seats."
@@ -594,18 +626,57 @@ class SniperManager:
     async def _poll_once(self, cfg: SnipeConfig) -> None:
         self.last_poll_at = time.time()
         self.status = "watching"
-        self.detail = f"Polling schedule for '{cfg.target_movie}' on {cfg.show_date}..."
 
-        dates = await self.catalog.dates(cfg.location_id)
+        if cfg.all_locations:
+            self.detail = f"Scanning every location for '{cfg.target_movie}' on {cfg.show_date}..."
+            try:
+                locations = await self.catalog.locations()
+            except Exception as exc:
+                self.detail = f"Could not load locations: {exc}. Next poll in {cfg.poll_seconds}s."
+                await self._report(cfg, self.detail)
+                return
+            search = [
+                {"id": int(loc.get("id") or 0), "title": str(loc.get("title") or "")}
+                for loc in locations
+                if int(loc.get("id") or 0) > 0
+            ]
+        else:
+            self.detail = f"Polling schedule for '{cfg.target_movie}' on {cfg.show_date}..."
+            search = [{"id": cfg.location_id, "title": cfg.location_name}]
+
+        for loc in search:
+            match = await self._find_match(cfg, loc["id"], loc["title"])
+            if match:
+                chosen, movie_id = match
+                await self._fire(cfg, chosen, movie_id, loc["id"], loc["title"])
+                return
+
+        if cfg.all_locations:
+            self.detail = (
+                f"No matching show for '{cfg.target_movie}' on {cfg.show_date} across "
+                f"{len(search)} location(s). Next poll in {cfg.poll_seconds}s."
+            )
+        else:
+            self.detail = (
+                f"'{cfg.target_movie}' is not bookable on {cfg.show_date} at "
+                f"{cfg.location_name} yet. Next poll in {cfg.poll_seconds}s."
+            )
+        await self._report(cfg, self.detail)
+
+    async def _find_match(
+        self, cfg: SnipeConfig, location_id: int, location_name: str
+    ) -> Optional[tuple[dict, int]]:
+        """Search one location for the target show. Returns (chosen_show,
+        movie_id) on a match, else None. Swallowing per-location misses keeps
+        an all-locations scan quiet until something actually matches."""
+        try:
+            dates = await self.catalog.dates(location_id)
+        except Exception as exc:
+            log.debug("sniper: %s catalog error: %s", location_name, exc)
+            return None
         target_day = next((d for d in dates if str(d.get("date") or "") == cfg.show_date), None)
         if target_day is None:
-            self.detail = (
-                f"{cfg.show_date} is not published at {cfg.location_name} yet. "
-                f"Next poll in {cfg.poll_seconds}s."
-            )
-            await self._report(cfg, self.detail)
-            return
-
+            return None
         movie = next(
             (
                 m for m in (target_day.get("movies") or [])
@@ -614,38 +685,30 @@ class SniperManager:
             None,
         )
         if movie is None or not int(movie.get("id") or 0):
-            self.detail = (
-                f"'{cfg.target_movie}' is not bookable on {cfg.show_date} yet. "
-                f"Next poll in {cfg.poll_seconds}s."
-            )
-            await self._report(cfg, self.detail)
-            return
-
-        shows = await self.catalog.shows(cfg.location_id, int(movie["id"]), cfg.show_date)
+            return None
+        shows = await self.catalog.shows(location_id, int(movie["id"]), cfg.show_date)
         chosen = self._pick_show(shows, cfg)
         if chosen is None:
-            self.detail = (
-                f"'{cfg.target_movie}' is listed on {cfg.show_date}, but no preferred show is available. "
-                f"Next poll in {cfg.poll_seconds}s."
-            )
-            await self._report(cfg, self.detail)
-            return
+            return None
+        return chosen, int(movie["id"])
 
-        # resolve seats + build the four payments
+    async def _fire(
+        self, cfg: SnipeConfig, chosen: dict, movie_id: int,
+        location_id: int, location_name: str,
+    ) -> None:
         self.status = "firing"
         self.detail = (
             f"DETECTED {chosen.get('movie_title')} — {chosen.get('hall')} "
-            f"{chosen.get('time_label')}. Resolving {cfg.total_seats} seats."
+            f"{chosen.get('time_label')} at {location_name}. Resolving {cfg.total_seats} seats."
         )
         match_msg = (
             f"🎯 MATCH FOUND — BOOKING NOW\n"
             f"Movie: {chosen.get('movie_title')}\n"
             f"Hall: {chosen.get('hall')} | Time: {chosen.get('time_label')}\n"
-            f"Date: {cfg.show_date} | Location: {cfg.location_name}\n"
+            f"Date: {cfg.show_date} | Location: {location_name}\n"
             f"Seats: {cfg.total_seats} across {cfg.num_payments} payment(s)"
         )
         await self._report(cfg, match_msg, force=True)
-        # Validate show structure before attempting booking
         required = ("program_id", "screen_id", "time")
         missing_fields = [f for f in required if not chosen.get(f)]
         if missing_fields:
@@ -653,7 +716,9 @@ class SniperManager:
             self.detail = f"Show data incomplete (missing {', '.join(missing_fields)}). Cannot book."
             await self._report(cfg, self.detail, force=True)
             return
-        target, payments = await self._build_payload(chosen, cfg, int(movie["id"]))
+        target, payments = await self._build_payload(
+            chosen, cfg, movie_id, location_id, location_name
+        )
         try:
             await self.group.start(
                 target,
@@ -668,7 +733,7 @@ class SniperManager:
         self.status = "handed_off"
         self.detail = (
             "Target found and handed off to the group runner. "
-            "Watch the Live run panel for the four sessions."
+            "Watch the Live run panel for the sessions."
         )
         await self._report(cfg, self.detail, force=True)
 
@@ -695,13 +760,16 @@ class SniperManager:
             log.warning("Telegram watcher report failed: %s", exc)
 
     async def _build_payload(
-        self, show: dict, cfg: SnipeConfig, movie_id: int
+        self, show: dict, cfg: SnipeConfig, movie_id: int,
+        location_id: Optional[int] = None, location_name: Optional[str] = None,
     ) -> tuple[dict, list[dict]]:
+        loc_id = location_id if location_id is not None else cfg.location_id
+        loc_name = location_name or cfg.location_name
         seat_types = show.get("seat_types") or []
         seat_type = seat_types[0] if seat_types else {}
         seat_type_id = int(seat_type.get("id") or 0)
 
-        seat_catalog = await self.catalog.seats(cfg.location_id, int(show.get("program_id") or 0))
+        seat_catalog = await self.catalog.seats(loc_id, int(show.get("program_id") or 0))
         labels = compute_seat_plan(
             seat_catalog,
             seat_type_id,
@@ -719,8 +787,8 @@ class SniperManager:
             )
 
         target = {
-            "location_id": cfg.location_id,
-            "location_name": cfg.location_name,
+            "location_id": loc_id,
+            "location_name": loc_name,
             "show_date": cfg.show_date,
             "movie_id": int(show.get("movie_id") or movie_id),
             "movie_title": str(show.get("movie_title") or cfg.target_movie),

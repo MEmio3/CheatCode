@@ -59,8 +59,9 @@ class SnipeAttendeeIn(BaseModel):
 
 class SnipeConfigIn(BaseModel):
     target_movie: str = Field(..., min_length=1, max_length=200)
-    location_id: int = Field(..., gt=0)
-    location_name: str = Field(..., min_length=1, max_length=160)
+    location_id: int = Field(0, ge=0)
+    location_name: str = Field("", max_length=160)
+    all_locations: bool = False
     hall_ids: list[int] = Field(default_factory=list, max_length=12)
     show_date: str = Field(..., min_length=10, max_length=10)
     time_start: str = Field("", max_length=5)
@@ -85,6 +86,7 @@ def _to_snipe_config(body: SnipeConfigIn) -> SnipeConfig:
         target_movie=body.target_movie,
         location_id=body.location_id,
         location_name=body.location_name,
+        all_locations=body.all_locations,
         hall_ids=list(body.hall_ids),
         show_date=body.show_date,
         time_start=body.time_start,

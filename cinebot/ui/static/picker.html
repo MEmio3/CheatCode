@@ -96,6 +96,7 @@
       <p class="snipe-help">Set attendee names + bKash numbers in step 03 (seats are auto-computed from the rule below), then start watching. When the target movie goes bookable on the chosen date/hall/time, the configured sessions fire automatically. Saved only to a local gitignored file.</p>
       <div class="picker-grid">
         <label><span>Location</span><select id="snipe-location"><option value="">Load locations first</option></select></label>
+        <label class="override-warning"><input id="snipe-all-locations" type="checkbox" /> <span>Check all locations — watch every branch and fire at whichever has the target show</span></label>
         <label><span>Target movie</span><input id="snipe-movie" type="text" placeholder="e.g. Spider-Man: Brand New Day" required /></label>
         <label><span>Show date</span><input id="snipe-date" type="date" required /></label>
         <label><span>Preferred halls (optional)</span><input id="snipe-halls" type="text" placeholder="6, 7 (empty = any)" /></label>

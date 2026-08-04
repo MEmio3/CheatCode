@@ -188,3 +188,100 @@ def test_preferred_row_unfit_expands_to_adjacent_row():
     result = compute_seat_plan(catalog, 1, ["E"], "", 8, tolerance=3)
     assert len(result) == 8
     assert all(s.startswith("F") for s in result)
+
+
+# --- all-locations scan -----------------------------------------------------#
+
+
+class _FakeCatalog:
+    """Three branches; the movie is listed at 1 and 2 but only branch 2 has a
+    matching show, so a scan must look past branch 1 to find it."""
+
+    def __init__(self, matching_loc=2):
+        self.matching_loc = matching_loc
+
+    async def locations(self):
+        return [
+            {"id": 1, "title": "Bashundhara"},
+            {"id": 2, "title": "Shimanto"},
+            {"id": 3, "title": "Sony"},
+        ]
+
+    async def dates(self, loc_id):
+        movies = (
+            [{"id": 10, "title": "Spider-Man: Brand New Day"}]
+            if loc_id in (1, 2) else []
+        )
+        return [{"date": "2026-08-01", "movies": movies}]
+
+    async def shows(self, loc_id, movie_id, show_date):
+        if loc_id != self.matching_loc:
+            return []
+        return [{
+            "screen_id": 6, "time": "17:00", "program_id": 999,
+            "hall": "Hall 6", "time_label": "5:00 PM",
+            "movie_title": "Spider-Man: Brand New Day",
+            "seat_types": [{"id": 1, "title": "Premium", "price": 600}],
+        }]
+
+    async def seats(self, loc_id, program_id):
+        return _catalog([_row("E", 10), _row("F", 10)], n_cols=10)
+
+
+class _FakeGroup:
+    def __init__(self):
+        self.started = None
+
+    async def start(self, target, payments, allow_duplicate_identity=False):
+        self.started = (target, payments)
+
+
+def _no_telegram(monkeypatch):
+    monkeypatch.setattr(
+        "cinebot.sniper.CredentialStore.auto",
+        lambda: type("S", (), {"get": lambda self, k: None})(),
+    )
+    monkeypatch.setattr("cinebot.sniper.telegram_env_credentials", lambda: (None, None))
+
+
+def test_all_locations_makes_location_optional():
+    config(all_locations=True, location_id=0, location_name="").validate()
+
+
+def test_single_location_still_required_without_all_locations():
+    cfg = config(all_locations=False, location_id=0, location_name="")
+    with pytest.raises(GroupPlanError):
+        cfg.validate()
+
+
+@pytest.mark.asyncio
+async def test_all_locations_scans_past_branches_without_a_show(monkeypatch):
+    _no_telegram(monkeypatch)
+    catalog = _FakeCatalog(matching_loc=2)
+    group = _FakeGroup()
+    manager = SniperManager(catalog, group)
+    cfg = config(all_locations=True, location_id=0, location_name="")
+    cfg.validate()
+
+    await manager._poll_once(cfg)
+
+    assert group.started is not None
+    target, _payments = group.started
+    assert target["location_id"] == 2
+    assert target["location_name"] == "Shimanto"
+
+
+@pytest.mark.asyncio
+async def test_all_locations_without_any_match_does_not_fire(monkeypatch):
+    _no_telegram(monkeypatch)
+    catalog = _FakeCatalog(matching_loc=None)  # no branch exposes a show
+    group = _FakeGroup()
+    manager = SniperManager(catalog, group)
+    cfg = config(all_locations=True, location_id=0, location_name="")
+    cfg.validate()
+
+    await manager._poll_once(cfg)
+
+    assert group.started is None
+    assert manager.status == "watching"
+    assert "3 location" in manager.detail

@@ -604,30 +604,34 @@ class GroupBookingManager:
             clicked_count = await self._batch_click_seats(page, labels)
             log.info(f"[Session {session.index}] JS batch clicked {clicked_count}/{len(labels)} seats.")
             
-            # Verify and fallback to click ONLY missing seats
-            await page.wait_for_timeout(500)
-            selected_text = await page.locator(".selected_seat").inner_text(timeout=5_000)
-            accepted = set(re.findall(r"\b[A-Z]{1,3}\d+\b", selected_text.upper()))
+            # Verify and real-click anything the batch missed. The batch path
+            # dispatches synthetic (untrusted) events, which the Cineplex SPA
+            # sometimes ignores — so a real Playwright click per missing seat
+            # is the reliable fallback and must always run.
+            await page.wait_for_timeout(400)
+            accepted = await self._read_selected_labels(page)
             missing = [label for label in labels if label not in accepted]
-            
+
             if missing:
-                log.warning(f"[Session {session.index}] JS batch missed seats: {missing}. Falling back to sequential clicks for missing seats.")
+                log.warning(f"[Session {session.index}] Batch missed seats: {missing}. Falling back to real clicks.")
                 for label in missing:
                     await self._dismiss_swal2(page)
                     seat = await self._wait_for_seat(page, label)
-                    await seat.click(timeout=5_000)
+                    try:
+                        await seat.click(timeout=5_000)
+                    except Exception as exc:
+                        log.warning(f"[Session {session.index}] Real click on {label} failed: {exc}")
                     log.info(f"[Session {session.index}] Clicked {label} sequentially.")
-                    await page.wait_for_timeout(50)
+                    await page.wait_for_timeout(80)
 
             # Final verification
-            selected_text = await page.locator(".selected_seat").inner_text(timeout=5_000)
-            accepted = set(re.findall(r"\b[A-Z]{1,3}\d+\b", selected_text.upper()))
+            accepted = await self._read_selected_labels(page)
             missing = [label for label in labels if label not in accepted]
             if missing:
                 err_msg = "Cineplex did not accept assigned seats: " + ", ".join(missing)
                 log.error(f"[Session {session.index}] {err_msg}")
                 raise GroupPlanError(err_msg)
-            
+
             log.info(f"[Session {session.index}] Seats successfully selected: {accepted}")
 
             log.info(f"[Session {session.index}] Filling attendee details...")
@@ -865,6 +869,19 @@ class GroupBookingManager:
         except Exception as exc:
             log.warning("JS batch seat click failed, using fallback: %s", exc)
             return 0
+
+    async def _read_selected_labels(self, page) -> set[str]:
+        """Labels the page currently shows as selected.
+
+        Tolerates an empty or not-yet-rendered ``.selected_seat`` summary by
+        returning an empty set instead of raising, so the real-click fallback
+        always runs when the fast batch path selected nothing.
+        """
+        try:
+            text = await page.locator(".selected_seat").inner_text(timeout=2_500)
+        except Exception:
+            return set()
+        return set(re.findall(r"\b[A-Z]{1,3}\d+\b", text.upper()))
 
     async def _dismiss_swal2(self, page) -> None:
         """Dismiss SweetAlert2 popups that intercept pointer events."""

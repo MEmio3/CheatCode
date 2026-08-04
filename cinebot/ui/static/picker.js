@@ -693,7 +693,8 @@ function readSnipeAttendees() {
 function buildSnipeConfig() {
   const sl = $("snipe-location");
   const slOpt = sl && sl.options[sl.selectedIndex];
-  if (!slOpt || !slOpt.value) throw new Error("Pick a sniper location.");
+  const allLoc = $("snipe-all-locations").checked;
+  if (!allLoc && (!slOpt || !slOpt.value)) throw new Error("Pick a sniper location, or enable 'check all locations'.");
   if (!$("snipe-movie").value.trim()) throw new Error("Enter the movie title to watch for.");
   if (!$("snipe-date").value.trim()) throw new Error("Choose the required show date.");
   if (snipePayCount() < minPayments()) {
@@ -709,8 +710,9 @@ function buildSnipeConfig() {
   if (rows.length < 1) throw new Error("Primary rows are required (e.g. E,F).");
   return {
     target_movie: $("snipe-movie").value.trim(),
-    location_id: Number(sl.value),
-    location_name: slOpt.textContent,
+    all_locations: allLoc,
+    location_id: allLoc ? 0 : Number(sl.value),
+    location_name: allLoc ? "" : (slOpt ? slOpt.textContent : ""),
     hall_ids: hallIds,
     show_date: $("snipe-date").value.trim(),
     time_start: $("snipe-time-start").value.trim(),
@@ -733,6 +735,7 @@ async function loadSnipeConfig() {
     if (!cfg || cfg.saved === false || !cfg.target_movie) return;
     $("snipe-movie").value = cfg.target_movie;
     $("snipe-date").value = cfg.show_date;
+    if ($("snipe-all-locations")) $("snipe-all-locations").checked = Boolean(cfg.all_locations);
     const sl = $("snipe-location");
     if (sl && cfg.location_id) savedSnipeLocationId = String(cfg.location_id);
     $("snipe-halls").value = (cfg.hall_ids || []).join(",");
@@ -754,8 +757,9 @@ async function loadSnipeConfig() {
       if (att.name) e.querySelector(".name-input").value = att.name;
       if (att.bkash) e.querySelector(".phone-input").value = att.bkash;
     });
+    const where = cfg.all_locations ? "all locations" : cfg.location_name;
     setSnipeStatus(
-      `Saved target: ${cfg.target_movie} on ${cfg.show_date} — ${cfg.location_name}, halls ${(cfg.hall_ids||[]).join(",") || "any"}, times ${cfg.time_start || "any"}-${cfg.time_end || "any"}. ${cfg.total_seats} seats (rows ${(cfg.primary_rows||[]).join(",") || "auto"}, fill ${cfg.fill_row || "auto"}, keep groups of ${cfg.tolerance ?? 3}${cfg.force ? ", force-fill on" : ""}). ${cfg.attendees.length} attendees.`,
+      `Saved target: ${cfg.target_movie} on ${cfg.show_date} — ${where}, halls ${(cfg.hall_ids||[]).join(",") || "any"}, times ${cfg.time_start || "any"}-${cfg.time_end || "any"}. ${cfg.total_seats} seats (rows ${(cfg.primary_rows||[]).join(",") || "auto"}, fill ${cfg.fill_row || "auto"}, keep groups of ${cfg.tolerance ?? 3}${cfg.force ? ", force-fill on" : ""}). ${cfg.attendees.length} attendees.`,
       "ready",
     );
   } catch {
