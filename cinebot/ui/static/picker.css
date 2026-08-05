@@ -137,7 +137,12 @@ select:disabled { color: #62576b; cursor: not-allowed; opacity: .8; }
 ::placeholder { color: #6a5f78; }
 
 .override-warning { display: flex; align-items: flex-start; gap: 10px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--field-2); color: var(--muted); font-size: 12.5px; line-height: 1.45; cursor: pointer; }
-.override-warning input { width: auto; accent-color: var(--purple); margin-top: 1px; cursor: pointer; }
+.override-warning input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+.override-warning .toggle { position: relative; flex: none; width: 42px; height: 24px; border: 1px solid #4a385c; border-radius: 999px; background: #241a2e; cursor: pointer; transition: background .18s, border-color .18s, box-shadow .15s; }
+.override-warning .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #c7b9cf; box-shadow: 0 1px 3px rgba(0,0,0,.4); transition: transform .18s ease, background .18s; }
+.override-warning input:checked + .toggle { background: linear-gradient(100deg, #7d27c0, #a548df); border-color: transparent; }
+.override-warning input:checked + .toggle::after { transform: translateX(18px); background: #fff; }
+.override-warning input:focus-visible + .toggle { box-shadow: 0 0 0 3px rgba(156,69,223,.2); }
 .override-warning span { color: #cbb8d6; }
 
 .show-summary { margin-top: 14px; padding: 14px 16px; border: 1px solid rgba(193,122,242,.18); border-radius: 12px; color: #d9cde1; background: rgba(156,69,223,.06); font-size: 12.5px; line-height: 1.55; }

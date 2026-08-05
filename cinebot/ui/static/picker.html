@@ -6,7 +6,7 @@
   <link rel="icon" href="/favicon.ico" />
   <meta name="theme-color" content="#0b0711" />
   <title>Cineplex Group Booker</title>
-  <link rel="stylesheet" href="/static/picker.css?v=8" />
+  <link rel="stylesheet" href="/static/picker.css?v=10" />
 </head>
 <body>
   <main class="shell">
@@ -71,7 +71,7 @@
           <span class="memory-pill">Memory only</span>
         </div>
         <div id="payment-fields" class="payment-fields" aria-live="polite"></div>
-        <label class="override-warning"><input id="allow-duplicate-identity" type="checkbox" /> <span>Allow the same name or bKash number across payments (unsafe; launches 5 seconds apart)</span></label>
+        <label class="override-warning"><input id="allow-duplicate-identity" type="checkbox" /><i class="toggle"></i><span>Allow the same name or bKash number across payments (unsafe; launches 5 seconds apart)</span></label>
         <div id="form-error" class="inline-error" role="alert"></div>
         <button id="start-button" class="primary-button" type="button" disabled>
           <span>Verify seats &amp; launch payments</span><span>&rarr;</span>
@@ -99,7 +99,7 @@
       <p class="snipe-help">Set attendee names + bKash numbers in step 03 (seats are auto-computed from the rule below), then start watching. When the target movie goes bookable on the chosen date/hall/time, the configured sessions fire automatically. Saved only to a local gitignored file.</p>
       <div class="picker-grid">
         <label><span>Location</span><select id="snipe-location"><option value="">Load locations first</option></select></label>
-        <label class="override-warning"><input id="snipe-all-locations" type="checkbox" /> <span>Check all locations — watch every branch and fire at whichever has the target show</span></label>
+        <label class="override-warning"><input id="snipe-all-locations" type="checkbox" /><i class="toggle"></i><span>Check all locations — watch every branch and fire at whichever has the target show</span></label>
         <label><span>Target movie</span><input id="snipe-movie" type="text" placeholder="e.g. Spider-Man: Brand New Day" required /></label>
         <label><span>Show date</span><input id="snipe-date" type="date" required /></label>
         <label><span>Preferred halls (optional)</span><input id="snipe-halls" type="text" placeholder="6, 7 (empty = any)" /></label>
@@ -109,7 +109,7 @@
         <label><span>Primary rows (optional)</span><input id="snipe-rows" type="text" placeholder="E,F (empty = automatic)" /></label>
         <label><span>Fill row (optional)</span><input id="snipe-fill" type="text" placeholder="G" /></label>
         <label><span>Keep groups of at least</span><input id="snipe-tolerance" type="number" min="1" max="6" value="3" title="Smallest block the sniper treats as a group; smaller fragments are avoided so nobody sits alone" /></label>
-        <label class="override-warning"><input id="snipe-force" type="checkbox" /> <span>Force — ignore cohesion and grab any available seats to fill the total</span></label>
+        <label class="override-warning"><input id="snipe-force" type="checkbox" /><i class="toggle"></i><span>Force — ignore cohesion and grab any available seats to fill the total</span></label>
         <label><span>Poll every (sec)</span><input id="snipe-poll" type="number" min="15" value="75" /></label>
         <label><span>Telegram bot token</span><input id="telegram-token" type="password" autocomplete="off" placeholder="Stored in Windows Credential Manager" /></label>
         <label><span>Telegram chat ID</span><input id="telegram-chat" type="text" autocomplete="off" placeholder="Required for 30-minute updates" /></label>
