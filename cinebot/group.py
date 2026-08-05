@@ -63,10 +63,17 @@ def normalize_title(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value).strip()
 
 
-def movie_matches(value: str, target: str = TARGET_MOVIE) -> bool:
+import difflib
+
+
+def movie_matches(value: str, target: str = TARGET_MOVIE, threshold: float = 0.6) -> bool:
     wanted = normalize_title(target)
     actual = normalize_title(value)
-    return wanted in actual or actual in wanted
+    if not wanted or not actual:
+        return False
+    if wanted in actual or actual in wanted:
+        return True
+    return difflib.SequenceMatcher(None, wanted, actual).ratio() >= threshold
 
 
 def parse_show_time(value: str) -> time:

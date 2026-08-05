@@ -65,7 +65,7 @@ class SnipeConfigIn(BaseModel):
     show_date: str = Field(..., min_length=10, max_length=10)
     time_start: str = Field("", max_length=5)
     time_end: str = Field("", max_length=5)
-    poll_seconds: int = Field(75, ge=15, le=600)
+    poll_seconds: int = Field(75, ge=5, le=600)
     total_seats: int = Field(1, ge=1, le=40)
     primary_rows: list[str] = Field(default_factory=list, max_length=26)
     fill_row: str = Field("", max_length=3)
@@ -95,7 +95,6 @@ def _to_snipe_config(body: SnipeConfigIn) -> SnipeConfig:
         poll_seconds=body.poll_seconds,
         total_seats=body.total_seats,
         primary_rows=list(body.primary_rows),
-        fill_row=body.fill_row,
         trim_last=body.trim_last,
         num_payments=body.num_payments,
         attendees=[
@@ -277,6 +276,20 @@ async def group_close_browser(request: Request):
     return {"closed": await _group(request).close_browser()}
 
 
+@app.post("/api/cancel-all")
+async def cancel_all(request: Request):
+    """Emergency master cancel: stops sniper watcher, active group booking, and closes browser windows."""
+    sniper_stopped = await _sniper(request).stop()
+    group_stopped = await _group(request).stop()
+    browser_closed = await _group(request).close_browser()
+    return {
+        "cancelled": True,
+        "sniper_stopped": sniper_stopped,
+        "group_stopped": group_stopped,
+        "browser_closed": browser_closed,
+    }
+
+
 def _sniper(request: Request) -> SniperManager:
     return request.app.state.sniper
 
@@ -340,7 +353,7 @@ async def snipe_test(body: SnipeConfigIn, request: Request):
     try:
         cfg = _to_snipe_config(body)
         return await _sniper(request).test_config(cfg)
-    except GroupPlanError as exc:
+    except (GroupPlanError, CatalogError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 

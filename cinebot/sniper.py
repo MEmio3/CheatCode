@@ -53,7 +53,6 @@ class SnipeConfig:
     poll_seconds: int = 75
     total_seats: int = 1
     primary_rows: list[str] = field(default_factory=list)
-    fill_row: str = ""
     trim_last: int = 0
     num_payments: int = 1
     allow_duplicate_identity: bool = False
@@ -71,7 +70,6 @@ class SnipeConfig:
             "poll_seconds": self.poll_seconds,
             "total_seats": self.total_seats,
             "primary_rows": list(self.primary_rows),
-            "fill_row": self.fill_row,
             "trim_last": self.trim_last,
             "num_payments": self.num_payments,
             "allow_duplicate_identity": self.allow_duplicate_identity,
@@ -91,7 +89,6 @@ class SnipeConfig:
             poll_seconds=int(d.get("poll_seconds") or 75),
             total_seats=int(d.get("total_seats") or 1),
             primary_rows=[str(r) for r in (d.get("primary_rows") or [])],
-            fill_row=str(d.get("fill_row") or ""),
             trim_last=int(d.get("trim_last") or 0),
             num_payments=int(d.get("num_payments") or 1),
             allow_duplicate_identity=bool(d.get("allow_duplicate_identity", False)),
@@ -119,15 +116,13 @@ class SnipeConfig:
         if not (1 <= self.total_seats <= 40):
             raise GroupPlanError("Total seats must be between 1 and 40.")
         self.primary_rows = [row.strip().upper() for row in self.primary_rows if row.strip()]
-        self.fill_row = self.fill_row.strip().upper()
-        if len(set(self.primary_rows)) != len(self.primary_rows) or (self.fill_row and self.fill_row in self.primary_rows):
-            raise GroupPlanError("Rows must be unique; the fill row cannot also be a primary row.")
-        if self.fill_row and not self.primary_rows:
-            raise GroupPlanError("Choose primary rows before choosing a fill row.")
+        if len(set(self.primary_rows)) != len(self.primary_rows):
+            raise GroupPlanError("Primary rows must be unique.")
         min_payments = (self.total_seats + SITE_TRANSACTION_CAP - 1) // SITE_TRANSACTION_CAP
-        if not min_payments <= self.num_payments <= 8:
+        max_allowed_payments = min(8, self.total_seats)
+        if not min_payments <= self.num_payments <= max_allowed_payments:
             raise GroupPlanError(
-                f"{self.total_seats} seats need between {min_payments} and 8 payments; "
+                f"{self.total_seats} seats need between {min_payments} and {max_allowed_payments} payments; "
                 f"you set {self.num_payments}."
             )
         if len(self.attendees) != self.num_payments:
@@ -184,15 +179,108 @@ def is_active() -> bool:
     return os.path.exists(ACTIVE_PATH)
 
 
+def _compute_automatic_seat_plan(seat_type: dict[str, Any], total: int) -> list[str]:
+    """Dynamically select `total` seats prioritizing middle rows (best viewing
+    angle ~65% back from screen) and keeping the group together in contiguous
+    blocks without separating them."""
+    import math
+
+    rows_list = seat_type.get("rows") or []
+    n_rows = len(rows_list)
+    n_cols = int(seat_type.get("n_cols") or 0)
+    if not n_rows or total <= 0:
+        raise GroupPlanError(f"Could not find {total} available seats in the live layout.")
+
+    ideal_row_idx = 0.65 * (n_rows - 1) if n_rows > 1 else 0.0
+    ideal_col_idx = (n_cols - 1) / 2.0 if n_cols > 1 else 0.0
+    row_sigma = max(1.0, n_rows / 3.0)
+    col_sigma = max(1.0, n_cols / 3.0)
+
+    # 1. Search for a single contiguous block of length `total` across all rows
+    candidate_blocks: list[tuple[float, list[dict[str, Any]]]] = []
+    for r_idx, row in enumerate(rows_list):
+        row_score = math.exp(-0.5 * ((r_idx - ideal_row_idx) / row_sigma) ** 2)
+        cells = [c for c in (row.get("cells") or []) if c.get("label") and c.get("status") == "available"]
+        cells.sort(key=lambda c: int(c.get("cidx") or 0))
+
+        runs: list[list[dict[str, Any]]] = []
+        current_run: list[dict[str, Any]] = []
+        prev_cidx: int | None = None
+        for c in cells:
+            cidx = int(c.get("cidx") or 0)
+            if prev_cidx is None or cidx == prev_cidx + 1:
+                current_run.append(c)
+            else:
+                if current_run:
+                    runs.append(current_run)
+                current_run = [c]
+            prev_cidx = cidx
+        if current_run:
+            runs.append(current_run)
+
+        for run in runs:
+            if len(run) >= total:
+                for start in range(0, len(run) - total + 1):
+                    block = run[start : start + total]
+                    center_cidx = (int(block[0].get("cidx") or 0) + int(block[-1].get("cidx") or 0)) / 2.0
+                    col_score = math.exp(-0.5 * ((center_cidx - ideal_col_idx) / col_sigma) ** 2)
+                    total_score = 0.5 * row_score + 0.5 * col_score
+                    candidate_blocks.append((total_score, block))
+
+    if candidate_blocks:
+        candidate_blocks.sort(key=lambda item: item[0], reverse=True)
+        return [str(c["label"]) for c in candidate_blocks[0][1]]
+
+    # 2. If no single row can fit all `total` seats in one contiguous block,
+    # assemble minimal contiguous chunks from top-scoring middle rows
+    scored_runs: list[tuple[float, list[dict[str, Any]]]] = []
+    for r_idx, row in enumerate(rows_list):
+        row_score = math.exp(-0.5 * ((r_idx - ideal_row_idx) / row_sigma) ** 2)
+        cells = [c for c in (row.get("cells") or []) if c.get("label") and c.get("status") == "available"]
+        cells.sort(key=lambda c: int(c.get("cidx") or 0))
+        runs: list[list[dict[str, Any]]] = []
+        current_run: list[dict[str, Any]] = []
+        prev_cidx: int | None = None
+        for c in cells:
+            cidx = int(c.get("cidx") or 0)
+            if prev_cidx is None or cidx == prev_cidx + 1:
+                current_run.append(c)
+            else:
+                if current_run:
+                    runs.append(current_run)
+                current_run = [c]
+            prev_cidx = cidx
+        if current_run:
+            runs.append(current_run)
+
+        for run in runs:
+            center_cidx = (int(run[0].get("cidx") or 0) + int(run[-1].get("cidx") or 0)) / 2.0
+            col_score = math.exp(-0.5 * ((center_cidx - ideal_col_idx) / col_sigma) ** 2)
+            score = 0.5 * row_score + 0.5 * col_score
+            scored_runs.append((score, run))
+
+    scored_runs.sort(key=lambda item: item[0], reverse=True)
+    picked: list[dict[str, Any]] = []
+    for _, run in scored_runs:
+        needed = total - len(picked)
+        if needed <= 0:
+            break
+        picked.extend(run[:needed])
+
+    labels = [str(c["label"]) for c in picked]
+    if len(labels) != total:
+        raise GroupPlanError(f"Could not find {total} available seats in the live layout (got {len(labels)}).")
+    return labels
+
+
 def compute_seat_plan(
     seat_catalog: dict[str, Any],
     seat_type_id: int,
     primary_rows: list[str],
-    fill_row: str,
     total: int,
     trim_last: int = 2,
 ) -> list[str]:
-    """Resolve the exact seat labels from a live seat map per the plan rule."""
+    """Resolve exact seat labels from a live seat map per the plan rule."""
     seat_type = next(
         (st for st in (seat_catalog.get("seat_types") or [])
          if int(st.get("id") or 0) == int(seat_type_id)),
@@ -201,6 +289,10 @@ def compute_seat_plan(
     if seat_type is None:
         raise GroupPlanError("The chosen seat class is not in the live layout.")
 
+    # Automatic mode: when primary_rows is empty
+    if not primary_rows:
+        return _compute_automatic_seat_plan(seat_type, total)
+
     by_row: dict[str, list[dict[str, Any]]] = {}
     for row in seat_type.get("rows") or []:
         cells = [
@@ -208,37 +300,38 @@ def compute_seat_plan(
             if c.get("label") and c.get("status") == "available"
         ]
         cells.sort(key=lambda c: int(c.get("cidx") or 0))
-        by_row[str(row.get("label") or "")] = cells
+        label_key = str(row.get("label") or "").strip().upper()
+        if label_key:
+            by_row[label_key] = cells
 
     picked: list[dict[str, Any]] = []
-    if not primary_rows:
-        automatic_rows = [row for row, cells in by_row.items() if cells]
-        picked = [cell for row in automatic_rows for cell in by_row[row]][:total]
-        labels = [str(c["label"]) for c in picked]
-        if len(labels) != total:
-            raise GroupPlanError(f"Could not find {total} available seats in the live layout.")
-        return labels
-
     for r in primary_rows:
-        cells = by_row.get(r, [])
-        if len(cells) <= trim_last:
-            raise GroupPlanError(
-                f"Row {r} has only {len(cells)} available seat(s); "
-                f"cannot drop the last {trim_last}."
-            )
-        picked.extend(cells[: len(cells) - trim_last])
+        r_upper = r.strip().upper()
+        cells = by_row.get(r_upper, [])
+        if len(cells) > trim_last:
+            picked.extend(cells[: len(cells) - trim_last])
+        elif cells:
+            picked.extend(cells)
 
     need = total - len(picked)
     if need < 0:
         picked = picked[:total]
     elif need > 0:
-        fill_cells = by_row.get(fill_row, [])
-        if len(fill_cells) < need:
-            raise GroupPlanError(
-                f"Need {need} more seat(s) from row {fill_row} to reach {total}, "
-                f"only {len(fill_cells)} available there."
-            )
-        picked.extend(fill_cells[:need])
+        # Overflow: automatically pick remaining needed seats from closest middle rows not in primary_rows
+        primary_upper = {r.strip().upper() for r in primary_rows}
+        non_primary_rows = [
+            row for row in (seat_type.get("rows") or [])
+            if str(row.get("label") or "").strip().upper() not in primary_upper
+        ]
+        if non_primary_rows:
+            overflow_type = dict(seat_type, rows=non_primary_rows)
+            auto_labels = _compute_automatic_seat_plan(overflow_type, need)
+            for label in auto_labels:
+                for cells in by_row.values():
+                    match = next((c for c in cells if str(c["label"]) == label), None)
+                    if match and match not in picked:
+                        picked.append(match)
+                        break
 
     labels = [str(c["label"]) for c in picked]
     if len(labels) != total:
@@ -252,28 +345,28 @@ def chunk_labels_into(labels: list[str], parts: int) -> list[list[str]]:
     parts >= ceil(n/cap) (enforced by SnipeConfig.validate)."""
     parts = max(1, parts)
     base, rem = divmod(len(labels), parts)
-    sizes = [base + (1 if i < rem else 0) for i in range(parts)]
-    out: list[list[str]] = []
-    i = 0
-    for size in sizes:
-        out.append(labels[i : i + size])
-        i += size
-    return out
+    chunks = []
+    idx = 0
+    for i in range(parts):
+        size = base + (1 if i < rem else 0)
+        chunks.append(labels[idx : idx + size])
+        idx += size
+    return chunks
 
 
 class SniperManager:
-    """Owns one watch-and-fire loop. Delegates booking to GroupBookingManager."""
+    """Manages the background sniper task."""
 
-    def __init__(self, catalog, group) -> None:
+    def __init__(self, catalog: Any, group: Any) -> None:
         self.catalog = catalog
         self.group = group
-        self.config: Optional[SnipeConfig] = None
-        self.status = "idle"
-        self.detail = "No sniper running. Save a target, then start watching."
-        self.last_poll_at: Optional[float] = None
-        self._task: Optional[asyncio.Task] = None
-        self._user_stop = False
-        self._last_report_at = 0.0
+        self.config: SnipeConfig | None = None
+        self.status: str = "idle"  # idle | watching | firing | handed_off | error | stopped
+        self.detail: str = "No sniper running."
+        self.last_poll_at: float | None = None
+        self._task: asyncio.Task | None = None
+        self._user_stop: bool = False
+        self._last_report_at: float = 0.0
 
     @property
     def busy(self) -> bool:
@@ -316,7 +409,11 @@ class SniperManager:
             return result
         result["movie_id"] = int(movie["id"])
         result["movie_title"] = str(movie.get("title") or cfg.target_movie)
-        shows = await self.catalog.shows(cfg.location_id, int(movie["id"]), cfg.show_date)
+        try:
+            shows = await self.catalog.shows(cfg.location_id, int(movie["id"]), cfg.show_date)
+        except Exception as exc:
+            result["detail"] = f"Catalog error: {exc}"
+            return result
         chosen = self._pick_show(shows, cfg)
         if chosen is None:
             result["detail"] = "Listed, but no preferred hall/time show available."
@@ -324,7 +421,23 @@ class SniperManager:
             return result
         result["match"] = True
         result["show"] = chosen
-        result["detail"] = f"MATCH: {chosen.get('hall')} {chosen.get('time_label')} (program {chosen.get('program_id')})"
+        try:
+            seat_catalog = await self.catalog.seats(cfg.location_id, int(chosen.get("program_id") or 0))
+            result["seat_catalog"] = seat_catalog
+            target, payments = await self._build_payload(chosen, cfg, int(movie["id"]))
+            all_seats = [seat for p in payments for seat in (p.get("seats") or [])]
+            seat_str = ", ".join(all_seats)
+            result["seats"] = all_seats
+            result["payments"] = payments
+            result["detail"] = (
+                f"MATCH: {chosen.get('hall')} {chosen.get('time_label')} — "
+                f"Assigned Seats ({len(all_seats)}): {seat_str}"
+            )
+        except Exception as exc:
+            result["detail"] = (
+                f"MATCH: {chosen.get('hall')} {chosen.get('time_label')} (program {chosen.get('program_id')}), "
+                f"seat note: {exc}"
+            )
         return result
 
     async def start(self, config: SnipeConfig) -> None:
@@ -387,7 +500,7 @@ class SniperManager:
                     await self._report(cfg, self.detail)
                 if self.status in ("handed_off", "error"):
                     break
-                await asyncio.sleep(max(15, cfg.poll_seconds))
+                await asyncio.sleep(max(5, cfg.poll_seconds))
         except asyncio.CancelledError:
             self.status = "stopped"
             self.detail = "Sniper stopped."
@@ -441,20 +554,6 @@ class SniperManager:
             await self._report(cfg, self.detail)
             return
 
-        # resolve seats + build the four payments
-        self.status = "firing"
-        self.detail = (
-            f"DETECTED {chosen.get('movie_title')} — {chosen.get('hall')} "
-            f"{chosen.get('time_label')}. Resolving {cfg.total_seats} seats."
-        )
-        match_msg = (
-            f"🎯 MATCH FOUND — BOOKING NOW\n"
-            f"Movie: {chosen.get('movie_title')}\n"
-            f"Hall: {chosen.get('hall')} | Time: {chosen.get('time_label')}\n"
-            f"Date: {cfg.show_date} | Location: {cfg.location_name}\n"
-            f"Seats: {cfg.total_seats} across {cfg.num_payments} payment(s)"
-        )
-        await self._report(cfg, match_msg, force=True)
         # Validate show structure before attempting booking
         required = ("program_id", "screen_id", "time")
         missing_fields = [f for f in required if not chosen.get(f)]
@@ -463,7 +562,25 @@ class SniperManager:
             self.detail = f"Show data incomplete (missing {', '.join(missing_fields)}). Cannot book."
             await self._report(cfg, self.detail, force=True)
             return
+
         target, payments = await self._build_payload(chosen, cfg, int(movie["id"]))
+        all_seats = [seat for p in payments for seat in (p.get("seats") or [])]
+        seat_str = ", ".join(all_seats)
+
+        self.status = "firing"
+        self.detail = (
+            f"DETECTED {chosen.get('movie_title')} — {chosen.get('hall')} "
+            f"{chosen.get('time_label')}. Seats secured: {seat_str}."
+        )
+        match_msg = (
+            f"🎯 MATCH FOUND — BOOKING NOW\n"
+            f"Movie: {chosen.get('movie_title')}\n"
+            f"Hall: {chosen.get('hall')} | Time: {chosen.get('time_label')}\n"
+            f"Date: {cfg.show_date} | Location: {cfg.location_name}\n"
+            f"Seats ({len(all_seats)}): {seat_str} across {cfg.num_payments} payment(s)"
+        )
+        await self._report(cfg, match_msg, force=True)
+
         try:
             await self.group.start(
                 target,
@@ -472,13 +589,13 @@ class SniperManager:
             )
         except GroupPlanError as exc:
             self.status = "error"
-            self.detail = f"Detected, but the booking would not start: {exc}"
+            self.detail = f"Detected seats ({seat_str}), but the booking would not start: {exc}"
             await self._report(cfg, self.detail, force=True)
             return
         self.status = "handed_off"
         self.detail = (
-            "Target found and handed off to the group runner. "
-            "Watch the Live run panel for the four sessions."
+            f"🎯 Target found! Secured seats ({len(all_seats)}): {seat_str} on {chosen.get('hall')} at {chosen.get('time_label')}. "
+            "Handed off to group runner."
         )
         await self._report(cfg, self.detail, force=True)
 
@@ -508,15 +625,41 @@ class SniperManager:
         self, show: dict, cfg: SnipeConfig, movie_id: int
     ) -> tuple[dict, list[dict]]:
         seat_types = show.get("seat_types") or []
-        seat_type = seat_types[0] if seat_types else {}
-        seat_type_id = int(seat_type.get("id") or 0)
-
         seat_catalog = await self.catalog.seats(cfg.location_id, int(show.get("program_id") or 0))
+
+        chosen_type_id: int | None = None
+        chosen_seat_type: dict = {}
+
+        # 1. Prefer class containing "Premium"
+        premium_st = next((st for st in seat_types if "premium" in str(st.get("title") or "").casefold()), None)
+        if premium_st:
+            chosen_type_id = int(premium_st.get("id") or 0)
+            chosen_seat_type = premium_st
+
+        # 2. If primary_rows are configured, pick the class that contains those rows
+        if cfg.primary_rows and seat_catalog.get("seat_types"):
+            for cat_st in seat_catalog["seat_types"]:
+                row_labels = {str(r.get("label") or "").strip().upper() for r in (cat_st.get("rows") or [])}
+                if any(pr.upper() in row_labels for pr in cfg.primary_rows):
+                    cat_id = int(cat_st.get("id") or 0)
+                    matching_st = next((st for st in seat_types if int(st.get("id") or 0) == cat_id), None)
+                    if matching_st:
+                        chosen_type_id = cat_id
+                        chosen_seat_type = matching_st
+                        break
+
+        # 3. Fallback to first available seat class
+        if not chosen_type_id and seat_types:
+            chosen_seat_type = seat_types[0]
+            chosen_type_id = int(chosen_seat_type.get("id") or 0)
+
+        if not chosen_type_id:
+            raise GroupPlanError("No valid seat class available for this show.")
+
         labels = compute_seat_plan(
             seat_catalog,
-            seat_type_id,
+            chosen_type_id,
             list(cfg.primary_rows),
-            cfg.fill_row,
             cfg.total_seats,
             cfg.trim_last,
         )
@@ -537,9 +680,9 @@ class SniperManager:
             "screen_id": int(show.get("screen_id") or 0),
             "hall_name": str(show.get("hall") or "Preferred hall"),
             "show_time": str(show.get("time") or ""),
-            "seat_type_id": seat_type_id,
-            "seat_type_name": str(seat_type.get("title") or "Premium"),
-            "unit_price": int(seat_type.get("price") or 0),
+            "seat_type_id": chosen_type_id,
+            "seat_type_name": str(chosen_seat_type.get("title") or "Premium"),
+            "unit_price": int(chosen_seat_type.get("price") or 0),
         }
         payments = [
             {

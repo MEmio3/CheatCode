@@ -43,7 +43,17 @@ function escapeHtml(value) {
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.detail || "Request failed");
+  if (!response.ok) {
+    let msg = "Request failed";
+    if (typeof payload.detail === "string") {
+      msg = payload.detail;
+    } else if (Array.isArray(payload.detail)) {
+      msg = payload.detail.map((e) => `${e.loc ? e.loc.join(".") : "field"}: ${e.msg}`).join("; ");
+    } else if (payload.detail && typeof payload.detail === "object") {
+      msg = JSON.stringify(payload.detail);
+    }
+    throw new Error(msg);
+  }
   return payload;
 }
 
@@ -723,7 +733,6 @@ function buildSnipeConfig() {
   if (hallIds.some((value) => !Number.isInteger(value) || value < 1)) {
     throw new Error("Preferred halls must be comma-separated positive numbers (e.g. 6, 7).");
   }
-  if (rows.length < 1) throw new Error("Primary rows are required (e.g. E,F).");
   return {
     target_movie: $("snipe-movie").value.trim(),
     location_id: Number(sl.value),
@@ -735,10 +744,9 @@ function buildSnipeConfig() {
     poll_seconds: Number($("snipe-poll").value) || 75,
     total_seats: Number($("snipe-total").value) || 1,
     primary_rows: rows,
-    fill_row: $("snipe-fill").value.trim().toUpperCase(),
     trim_last: 0,
     num_payments: snipePayCount(),
-    allow_duplicate_identity: $("allow-duplicate-identity").checked,
+    allow_duplicate_identity: Boolean($("allow-duplicate-identity")?.checked),
     attendees,
   };
 }
@@ -759,7 +767,6 @@ async function loadSnipeConfig() {
     $("snipe-pay-count").value = String(cfg.num_payments || 1);
     clampSnipePayCount();
     $("snipe-rows").value = (cfg.primary_rows || []).join(",");
-    $("snipe-fill").value = cfg.fill_row || "";
     $("snipe-poll").value = cfg.poll_seconds;
     renderSnipeAttendees(snipePayCount());
     (cfg.attendees || []).forEach((att, i) => {
@@ -769,7 +776,7 @@ async function loadSnipeConfig() {
       if (att.bkash) e.querySelector(".phone-input").value = att.bkash;
     });
     setSnipeStatus(
-      `Saved target: ${cfg.target_movie} on ${cfg.show_date} — ${cfg.location_name}, halls ${(cfg.hall_ids||[]).join(",") || "any"}, times ${cfg.time_start || "any"}-${cfg.time_end || "any"}. ${cfg.total_seats} seats (rows ${(cfg.primary_rows||[]).join(",")} minus last ${cfg.trim_last ?? 2}, fill ${cfg.fill_row}). ${cfg.attendees.length} attendees.`,
+      `Saved target: ${cfg.target_movie} on ${cfg.show_date} — ${cfg.location_name}, halls ${(cfg.hall_ids||[]).join(",") || "any"}, times ${cfg.time_start || "any"}-${cfg.time_end || "any"}. ${cfg.total_seats} seats (${cfg.primary_rows?.length ? `rows ${cfg.primary_rows.join(",")}` : "automatic seat selection"}). ${cfg.attendees.length} attendees.`,
       "ready",
     );
   } catch {
@@ -808,12 +815,74 @@ async function saveTelegramConfig() {
   }
 }
 
+function renderSnipeSeatDiagram(seatCatalog, seats = [], payments = []) {
+  const container = $("snipe-seat-map-container");
+  const mapEl = $("snipe-seat-map");
+  if (!seatCatalog || !seatCatalog.seat_types) return;
+
+  const assignedSet = new Set(seats);
+  let seatType = seatCatalog.seat_types.find((st) =>
+    (st.rows || []).some((r) => (r.cells || []).some((c) => assignedSet.has(c.label)))
+  );
+  if (!seatType) seatType = seatCatalog.seat_types[0];
+  if (!seatType) return;
+
+  // 1. Render in dedicated sniper container
+  if (container && mapEl) {
+    const rows = seatType.rows || [];
+    mapEl.innerHTML = rows.map((row) => {
+      const cells = row.cells.map((cell) => {
+        if (cell.status === "gap") return '<span class="seat-gap" aria-hidden="true"></span>';
+        const isAssigned = assignedSet.has(cell.label);
+        const disabled = cell.status !== "available" && !isAssigned ? "disabled" : "";
+        let className = cell.status === "available" ? "seat" : "seat taken";
+        if (isAssigned) {
+          className = "seat selected-0";
+        }
+        return `<button class="${className}" type="button" data-seat="${escapeHtml(cell.label)}" ${disabled}>${escapeHtml(cell.label)}</button>`;
+      }).join("");
+      return `<div class="seat-row"><span class="row-label">${escapeHtml(row.label)}</span><div class="row-cells" style="--cols:${seatType.n_cols}">${cells}</div></div>`;
+    }).join("");
+
+    if ($("snipe-seat-map-label")) {
+      $("snipe-seat-map-label").textContent = `${seats.length} seat(s) assigned: ${seats.join(", ")}`;
+    }
+    container.hidden = false;
+  }
+
+  // 2. Render in main seat stage
+  if ($("seat-map") && $("seat-stage")) {
+    $("seat-stage").classList.remove("locked");
+    renderSeatMap(seatType);
+    if (seats.length) {
+      assignments = (payments && payments.length
+        ? payments.map((p) => p.seats || [])
+        : [seats]);
+      paintSeatAssignments();
+      updateAssignments();
+    }
+  }
+
+  if (container && !container.hidden) {
+    container.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+}
+
 async function snipeTest() {
   try {
     const cfg = buildSnipeConfig();
-    setSnipeStatus("Testing the live schedule...", "loading");
-    const res = await api("/api/snipe/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfg) });
+    setSnipeStatus("Testing live schedule & rendering visual seat diagram...", "loading");
+    const res = await api("/api/snipe/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg),
+    });
     setSnipeStatus((res.match ? "MATCH — " : "No match — ") + res.detail, res.match ? "ready" : "loading");
+    if (res.match && res.seat_catalog) {
+      renderSnipeSeatDiagram(res.seat_catalog, res.seats || [], res.payments || []);
+    } else {
+      if ($("snipe-seat-map-container")) $("snipe-seat-map-container").hidden = true;
+    }
   } catch (error) { setSnipeStatus(error.message, "error"); }
 }
 
@@ -890,12 +959,31 @@ async function refreshSnipe() {
   }
 }
 
+async function cancelAll() {
+  try {
+    setSnipeStatus("Emergency cancel requested. Stopping all tasks...", "error");
+    setCatalogStatus("Emergency cancel requested. Stopping all background tasks...", "error");
+    await api("/api/cancel-all", { method: "POST" });
+    stopSnipePolling();
+    stopPolling();
+    $("snipe-start").hidden = false;
+    $("snipe-stop").hidden = true;
+    $("start-button").hidden = false;
+    $("stop-button").hidden = true;
+    setSnipeStatus("All sniper and booking processes cancelled.", "ready");
+    setCatalogStatus("All background tasks cancelled and browser windows closed.", "ready");
+  } catch (error) {
+    setSnipeStatus(`Cancel error: ${error.message}`, "error");
+  }
+}
+
 selects.location.addEventListener("change", onLocationChange);
 selects.date.addEventListener("change", onDateChange);
 selects.movie.addEventListener("change", onMovieChange);
 selects.show.addEventListener("change", onShowChange);
 selects.seatClass.addEventListener("change", onClassChange);
 $("reload-catalog").addEventListener("click", loadLocations);
+if ($("cancel-all-button")) $("cancel-all-button").addEventListener("click", cancelAll);
 $("start-button").addEventListener("click", startRun);
 $("stop-button").addEventListener("click", stopRun);
 if ($("close-browser-button")) $("close-browser-button").addEventListener("click", closeBrowser);
