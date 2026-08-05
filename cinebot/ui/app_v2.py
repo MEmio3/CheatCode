@@ -45,12 +45,6 @@ class StartIn(BaseModel):
     target: TargetIn
     payments: list[PaymentIn] = Field(..., min_length=1, max_length=8)
     allow_duplicate_identity: bool = False
-    fast: bool = False
-
-
-class ApiProbeIn(BaseModel):
-    target: TargetIn
-    payment: PaymentIn
 
 
 class OtpIn(BaseModel):
@@ -286,53 +280,6 @@ async def group_stop(request: Request):
 @app.post("/api/group/close-browser")
 async def group_close_browser(request: Request):
     return {"closed": await _group(request).close_browser()}
-
-
-@app.post("/api/group/api-probe")
-async def group_api_probe(body: ApiProbeIn, request: Request):
-    """Probe direct-API /booking: harvest a reCAPTCHA token from a real browser
-    and POST /booking over HTTP, returning the raw response. Covers booking only
-    (payment still needs a browser). Resolves seat sequence IDs from the live
-    layout so the caller only supplies labels."""
-    from ..live.api_booking import probe as api_probe
-    from ..live.catalog import available_seats_by_label
-
-    catalog = _catalog(request)
-    try:
-        raw = await catalog.raw_seats(body.target.location_id, body.target.program_id)
-    except CatalogError as exc:
-        raise _catalog_error(exc)
-    available = available_seats_by_label(raw, body.target.seat_type_id)
-    seat_seq_ids: list[str] = []
-    for label in [str(l).strip().upper() for l in body.payment.seats]:
-        cell = available.get(label)
-        if cell is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Seat {label} is not available in the live layout.",
-            )
-        seat_seq_ids.append(str(cell["id"]))
-    headless = os.getenv("CINEBOT_HEADLESS", "true").lower() not in ("false", "0", "no")
-    result = await api_probe(
-        body.target.model_dump(),
-        body.payment.model_dump(),
-        seat_seq_ids,
-        headless=headless,
-    )
-    resp = result.get("response") or {}
-    purchase = result.get("purchase") or {}
-    log.info(
-        "API probe result: ok=%s stage=%s booking http=%s code=%s | "
-        "purchase http=%s loc=%s body=%s",
-        result.get("ok"),
-        result.get("stage"),
-        resp.get("http_status"),
-        (resp.get("body") or {}).get("code"),
-        purchase.get("http_status"),
-        purchase.get("location"),
-        str(purchase.get("body"))[:600],
-    )
-    return result
 
 
 def _sniper(request: Request) -> SniperManager:

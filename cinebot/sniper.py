@@ -466,7 +466,7 @@ class SniperManager:
         self.last_poll_at: Optional[float] = None
         self._task: Optional[asyncio.Task] = None
         self._user_stop = False
-        self._last_report_at = 0.0
+        self._last_report_at = None
 
     @property
     def busy(self) -> bool:
@@ -565,7 +565,7 @@ class SniperManager:
             f"{config.total_seats} seats."
         )
         self.last_poll_at = None
-        self._last_report_at = 0.0
+        self._last_report_at = None
         self._task = asyncio.create_task(self._watch(), name="snipe-watch")
 
     async def stop(self) -> bool:
@@ -738,7 +738,7 @@ class SniperManager:
         await self._report(cfg, self.detail, force=True)
 
     async def _report(self, cfg: SnipeConfig, message: str, *, force: bool = False) -> None:
-        if not force and time.monotonic() - self._last_report_at < 1_800:
+        if self._last_report_at is not None and not force and time.monotonic() - self._last_report_at < 1_800:
             return
         self._last_report_at = time.monotonic()
         try:
