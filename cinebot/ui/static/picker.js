@@ -518,9 +518,9 @@ function renderRunState() {
         <div>
           <strong>${escapeHtml(session.name)} / ${escapeHtml(session.phone_mask)}</strong>
           <small>${escapeHtml(session.seats.join(", "))}</small>
-          <em>${escapeHtml(sessionStatus(session))}</em>
           ${events ? `<ul class="session-events">${events}</ul>` : ""}
         </div>
+        <em>${escapeHtml(sessionStatus(session))}</em>
       </article>`;
     }).join("");
   }
