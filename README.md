@@ -117,12 +117,12 @@ Configure a target movie, date, preferred halls, time range, seat allocation rul
 
 ---
 
-### OTP Verification
+### Full Interface Overview
 
-When a payment session reaches bKash, a modal appears showing the attendee, seats, amount, and invoice. Enter the SMS code here — the bot types it into the browser for you.
+The entire application runs on a single page — from show selection at the top, through seat mapping and payment coordination, down to the sniper watcher at the bottom.
 
 <p align="center">
-  <img src="docs/screenshots/otp_modal.jpg" alt="OTP Verification Modal" width="100%" />
+  <img src="docs/screenshots/full_page.jpg" alt="CineBot Full Interface" width="100%" />
 </p>
 
 ---
