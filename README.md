@@ -107,6 +107,16 @@ Enter attendee names and bKash numbers for each payment session (left panel). On
 
 ---
 
+### OTP and PIN Authorization
+
+When the live run navigates to the bKash payment gateway, CineBot intercepts the OTP step and presents this secure modal. You enter the SMS code here, keeping your credentials completely local.
+
+<p align="center">
+  <img src="docs/screenshots/otp_modal.jpg" alt="OTP Authorization Modal" width="100%" />
+</p>
+
+---
+
 ### Sniper Mode
 
 Configure a target movie, date, preferred halls, time range, seat allocation rules, and Telegram notifications. The sniper polls the schedule and fires the group booking automatically when a match drops.
