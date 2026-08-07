@@ -256,7 +256,6 @@ async def group_start(body: StartIn, request: Request):
             body.target.model_dump(),
             [payment.model_dump() for payment in body.payments],
             allow_duplicate_identity=body.allow_duplicate_identity,
-            fast=body.fast,
         )
     except GroupPlanError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
