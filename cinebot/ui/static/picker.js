@@ -42,8 +42,13 @@ function escapeHtml(value) {
 
 async function api(path, options = {}) {
   const response = await fetch(path, options);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.detail || "Request failed");
+  const text = await response.text();
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch (e) { payload = {}; }
+  if (!response.ok) {
+    const detail = payload.detail || text || `HTTP ${response.status}`;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
   return payload;
 }
 
